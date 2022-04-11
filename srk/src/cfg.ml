@@ -1,12 +1,5 @@
 open Syntax
 
-module type CFG = sig
-  type nonterminal
-  type terminal
-  type gsymbol = T of terminal | N of nonterminal
-  type production
-end
-
 module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
   type nonterminal = N.t [@@deriving ord]
   type terminal = T.t [@@deriving ord]
@@ -26,6 +19,18 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
     terminals: terminal list;
     nonterminals: nonterminal list;
   }
+
+  let empty (s: nonterminal) = {
+    start = s;
+    productions = [];
+    terminals = [];
+    nonterminals = [];
+  }
+
+  let add_terminal cfg t = { cfg with terminals = t :: cfg.terminals}
+  let add_nonterminal cfg n = { cfg with nonterminals = n :: cfg.nonterminals}
+  let add_production cfg nt out = { cfg with productions = (nt, out) :: cfg.productions}
+  let set_start cfg s = { cfg with start = s}
 
   let gen_nt_symbols context nonterminals prefix = 
     let m = NMap.empty in 
@@ -50,7 +55,7 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
     gen_map productions consts m
 
   (* Computes the expression describing the parikh image of the curent CFG *)
-  let _parikh context grammar mapping = 
+  let parikh context grammar mapping = 
 
     (* Generate flow variables for each nonterminal and terminal, as well as
     a "distance" from the start nonterminal. mapping binds terminals to flow variables. *)
@@ -78,7 +83,7 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
       match s with
       | N s when s = grammar.start -> mk_eq context (NMap.find s nmapping) (mk_add context [(mk_int context 1); prod_sum])
       | N s -> mk_eq context (NMap.find s nmapping) prod_sum
-      | T s -> mk_eq context (TMap.find s mapping) prod_sum
+      | T s -> mk_eq context (mapping s) prod_sum
       in
   
     (* In order to ensure connectedness, all nonterminals must have a valid distance from the start vertex 

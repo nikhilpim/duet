@@ -1,10 +1,17 @@
 (* Context Free Grammars *)
 
-module type CFG = sig
-  type terminal
-  type nonterminal
+
+
+module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) : (sig
+  type terminal = T.t
+  type nonterminal = N.t
   type gsymbol = T of terminal | N of nonterminal
   type production
-end
-
-module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) : (CFG)
+  type t
+  val empty: nonterminal -> t
+  val add_terminal: t -> terminal -> t
+  val add_nonterminal: t -> nonterminal -> t
+  val add_production: t -> nonterminal -> gsymbol list -> t
+  val set_start: t -> nonterminal -> t
+  val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> 'a Syntax.formula
+end)

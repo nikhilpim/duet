@@ -744,6 +744,42 @@ module RecGraph = struct
     let paths = omega_pathexpr query.query in
     Pathexpr.eval_omega ~table:omega_table ~algebra ~omega_algebra paths
 
+  
+  let _gen_cfg query tgt = 
+    let module N = IntPair in 
+    let module T = IntPair in
+    let module Q = Cfg.MakeCFG(N)(T) in
+
+    let cfg = Q.empty (query.src, tgt) in 
+    let wg = query.recgraph.path_graph in
+    let ce = query.recgraph.call_edges in
+
+    (* Adds a terminal per call edge in the CFG *)
+    let cfg = fold_reachable_edges (fun v_1 v_2 c -> (Q.add_terminal c (v_1, v_2))) wg query.src cfg in
+
+    let nt_ends = tgt :: M.fold (fun _ (_, call_end) acc -> call_end :: acc) ce [] in 
+
+    (* For every call edge (i, j) and the target, adds a nonterminal going from every vertex to j *)
+    let cfg = List.fold_left (fun cfg e -> U.fold_vertex (fun v cfg -> Q.add_nonterminal cfg (v, e)) wg.graph cfg) cfg nt_ends in
+
+    (* To be applied to every edge (v_1, v_2) in the CFG. If the edge is a call edge, 
+    adds N(v_1, end) -> N(call) N(v_2, end) where call is the call of (v_1, v_2) and end
+    is every possible nonterminal target. If the edge is not a call edge, adds
+    N(v_1, end) -> T(v_1, v_2) N(v_2)  *)
+    let helper v_1 v_2 acc = 
+      if M.mem (v_1, v_2) ce then
+        let call = M.find (v_1, v_2) ce in
+        List.fold_left (fun cfg e -> Q.add_production cfg (v_1, e) [N call ; N (v_2, e)]) acc nt_ends
+      else
+        List.fold_left (fun cfg e -> Q.add_production cfg (v_1, e) [T (v_1, v_2) ; N (v_2, e)]) acc nt_ends
+    in 
+
+    let cfg = fold_reachable_edges helper wg query.src cfg in
+    (* Once we have reached the target of a particular nonterminal, that symbol is allowed 
+    to go to null *)
+    let cfg = List.fold_left (fun cfg e -> Q.add_production cfg (e, e) []) cfg nt_ends in
+    cfg 
+
   let summarize_iterative
         (type a)
         path_query
