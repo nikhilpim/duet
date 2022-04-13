@@ -9,8 +9,6 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) : (sig
   type production
   type t
   val empty: nonterminal -> t
-  val add_terminal: t -> terminal -> t
-  val add_nonterminal: t -> nonterminal -> t
   val add_production: t -> nonterminal -> gsymbol list -> t
   val set_start: t -> nonterminal -> t
   val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> 'a Syntax.formula

@@ -24,6 +24,9 @@ type ('a,'b) omega_algebra =
 (** Unweighted graphs *)
 module U : Graph.Sig.G with type V.t = int
 
+(** Context free grammars *)
+module CFG : sig type t end
+
 type vertex = int
 
 (** Create an empty weighted graph over the given algebra of weights. *)
@@ -191,6 +194,9 @@ module RecGraph : sig
      query maintains summaries for each call that are used to assign
      weights to call edges. *)
   val mk_weight_query : query -> 'a Pathexpr.nested_algebra -> 'a weight_query
+
+  (** Generate a CFG representing the possible runs of query *)
+  val gen_cfg: query -> vertex -> CFG.t
 
   (** Build call summaries via successive approximation. *)
   val summarize_iterative : query ->

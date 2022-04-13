@@ -12,24 +12,28 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
   module NMap = Map.Make(N)
   module TMap = Map.Make(T)
   module PMap = Map.Make(struct type t = production let compare = compare_production end)
+  module NSet = Set.Make(N)
+  module TSet = Set.Make(T)
 
   type t = {
     start: nonterminal;
     productions: production list;
-    terminals: terminal list;
-    nonterminals: nonterminal list;
+    terminals: TSet.t;
+    nonterminals: NSet.t;
   }
 
   let empty (s: nonterminal) = {
     start = s;
     productions = [];
-    terminals = [];
-    nonterminals = [];
+    terminals = TSet.empty;
+    nonterminals = NSet.empty;
   }
 
-  let add_terminal cfg t = { cfg with terminals = t :: cfg.terminals}
-  let add_nonterminal cfg n = { cfg with nonterminals = n :: cfg.nonterminals}
-  let add_production cfg nt out = { cfg with productions = (nt, out) :: cfg.productions}
+  let add_production cfg nt out = { cfg 
+    with productions = (nt, out) :: cfg.productions; 
+    terminals = List.fold_left (fun s o -> match o with | T o -> (TSet.add o s) | _ -> s) cfg.terminals out; 
+    nonterminals = List.fold_left (fun s o -> match o with | N o -> (NSet.add o s) | _ -> s) cfg.nonterminals out; 
+    }
   let set_start cfg s = { cfg with start = s}
 
   let gen_nt_symbols context nonterminals prefix = 
@@ -59,9 +63,12 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
 
     (* Generate flow variables for each nonterminal and terminal, as well as
     a "distance" from the start nonterminal. mapping binds terminals to flow variables. *)
-    let nmapping = gen_nt_symbols context grammar.nonterminals "N" in 
+    let nts = NSet.elements grammar.nonterminals in
+    let ts = TSet.elements grammar.terminals in
+    
+    let nmapping = gen_nt_symbols context nts "N" in 
     let pmapping = gen_p_symbols context grammar.productions "P" in
-    let dmapping = gen_nt_symbols context grammar.nonterminals "D" in 
+    let dmapping = gen_nt_symbols context nts "D" in 
 
     (* For all nonterminals, f(nt) = /sum_{nt->w} f(nt->w) *)
     let outgoing_sum_helper nt = 
@@ -107,11 +114,11 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
         mk_if context (mk_lt context (mk_zero context) (NMap.find nt nmapping)) if_dist 
     in
 
-    let all_symbols = (List.map (fun t -> T t) grammar.terminals) @ (List.map (fun n -> N n) grammar.nonterminals) in 
+    let all_symbols = (List.map (fun t -> T t) ts) @ (List.map (fun n -> N n) nts) in 
 
-    let outgoing = mk_and context (List.map outgoing_sum_helper grammar.nonterminals) in
+    let outgoing = mk_and context (List.map outgoing_sum_helper nts) in
     let incoming = mk_and context (List.map incoming_sum_helper all_symbols) in
-    let dist = mk_and context (List.map dist_helper grammar.nonterminals) in 
+    let dist = mk_and context (List.map dist_helper nts) in 
     mk_and context [outgoing; incoming; dist]
     
 end
