@@ -187,6 +187,8 @@ struct
     in
     TransitionFormula.make ~exists body tr_symbols
 
+  let symbol_pair var = (Var.symbol_of var, post_symbol (Var.symbol_of var))
+
   let domain =
     let open Iteration in
     let open SolvablePolynomial in

@@ -197,6 +197,13 @@ module RecGraph : sig
 
   (** Generate a CFG representing the possible runs of query *)
   val gen_cfg: query -> vertex -> CFG.t
+  
+  (* Build call summaries via CFG reachability relation. *)
+  val summarize_cfg : query ->
+                     'a Pathexpr.nested_algebra ->
+                     ('a -> 'b Syntax.formula) ->
+                     'b Syntax.context -> (Syntax.symbol * Syntax.symbol) list -> ('b Syntax.formula ->
+                        (Syntax.symbol * Syntax.symbol) list -> 'a) -> 'a weight_query
 
   (** Build call summaries via successive approximation. *)
   val summarize_iterative : query ->

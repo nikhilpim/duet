@@ -32,9 +32,12 @@ module Make
        val pp : Format.formatter -> t -> unit
        val guard : t -> C.t formula
        val transform : t -> (var * C.t arith_term) BatEnum.t
+       val symbol_pair: var -> symbol * symbol 
        val mem_transform : var -> t -> bool
        val get_transform : var -> t -> C.t arith_term
        val assume : C.t formula -> t
+       val construct: C.t formula -> (var * C.t arith_term) list -> t
+       val to_transition_formula: t -> C.t TransitionFormula.t
        val mul : t -> t -> t
        val add : t -> t -> t
        val zero : t
@@ -43,12 +46,72 @@ module Make
        val exists : (var -> bool) -> t -> t
      end)
 = struct
-
   type vertex = int
   type transition = T.t
   type tlabel = T.t label
 
   type query = T.t WG.RecGraph.weight_query
+
+  let mk_cfg_query ts source = 
+    let module S = Set.Make(Var) in
+    let rg =
+      WG.fold_vertex
+        (fun v rg -> WG.RecGraph.add_vertex rg v)
+        ts
+        (WG.RecGraph.empty ())
+      |> WG.fold_edges (fun (u, w, v) rg ->
+             match w with
+             | Call (en,ex) ->
+                WG.RecGraph.add_call_edge rg u (en,ex) v
+             | Weight _ -> WG.RecGraph.add_edge rg u v)
+           ts
+    in
+    let algebra = function
+      | `Edge (u,v) ->
+         begin match WG.edge_weight ts u v with
+         | Weight w -> w
+         | Call _ -> assert false
+         end
+      | `Add (x, y) -> T.add x y
+      | `Mul (x, y) -> T.mul x y
+      | `Star x -> T.star x
+      | `Segment x -> T.exists Var.is_global x
+      | `Zero -> T.zero
+      | `One -> T.one
+    in
+    (* A set of all global variables in the graph *)
+    let all_gvars = WG.fold_edges (fun (_, w, _) s -> 
+              match w with 
+              | Weight t -> BatEnum.fold (fun s (var, _) -> if Var.is_global var then (S.add var s) else s) s (T.transform t)
+              | Call _ -> s
+      
+      ) ts S.empty 
+    in
+    (* Gets the formula representation of a transition, adding in unset global variables *)
+    let get_tf t = 
+      let tf =  (T.to_transition_formula t) in
+      let unincluded_gvars = S.filter (fun v -> (not (TransitionFormula.exists tf (Var.symbol_of v)))) all_gvars in
+      (S.fold (fun v ls -> 
+          let (pre, post) = T.symbol_pair v in
+        (Syntax.mk_eq C.context (Syntax.mk_const C.context pre) (Syntax.mk_const C.context post)) :: ls) unincluded_gvars []) 
+        |> List.cons (TransitionFormula.formula tf)
+        |> Syntax.mk_and C.context 
+    in
+
+    let symbol_pairs = List.map T.symbol_pair (S.elements all_gvars)
+        in
+
+    WG.RecGraph.summarize_cfg
+      (WG.RecGraph.mk_query rg source)
+      algebra
+      get_tf
+      C.context
+      symbol_pairs
+      (fun fr ls -> T.construct fr (List.map (fun (pre, post) -> 
+        match (Var.of_symbol pre) with
+        | Some c -> (c, Syntax.mk_const C.context post)
+        | None -> assert false 
+        ) ls))
 
   let mk_query ?(delay=1) ts source dom =
     let rg =

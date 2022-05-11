@@ -26,9 +26,12 @@ module Make
        val pp : Format.formatter -> t -> unit
        val guard : t -> C.t formula
        val transform : t -> (var * C.t arith_term) BatEnum.t
+       val symbol_pair: var -> symbol * symbol 
        val mem_transform : var -> t -> bool
        val get_transform : var -> t -> C.t arith_term
        val assume : C.t formula -> t
+       val construct: C.t formula -> (var * C.t arith_term) list -> t
+       val to_transition_formula: t -> C.t TransitionFormula.t
        val mul : t -> t -> t
        val add : t -> t -> t
        val zero : t
@@ -46,6 +49,10 @@ module Make
 
   (** Create an empty transition system. *)
   val empty : t
+
+  (* Create a query structure. Uses cfg reachability for summarization procedure. *)
+  val mk_cfg_query: transition label WeightedGraph.weighted_graph ->
+   vertex -> transition WeightedGraph.RecGraph.weight_query
 
   (** Create a query structure.  The optional [delay] parameter specifies the
       widening delay to use during summary computation. *)
