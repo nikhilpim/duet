@@ -1,9 +1,14 @@
 open Syntax
 
-module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
+module type Symbol = sig 
+  type t
+  val compare : t -> t -> int
+  val name: t -> string
+end
+
+module MakeCFG (N : Symbol) (T : Symbol) = struct
   type nonterminal = N.t [@@deriving ord]
   type terminal = T.t [@@deriving ord]
-  (* [@@deriving ord] *)
   type gsymbol = T of terminal | N of nonterminal[@@deriving ord]
   
   type production = (nonterminal * (gsymbol list)) [@@deriving ord]
@@ -32,13 +37,19 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
   let add_production cfg nt out = { cfg 
     with productions = (nt, out) :: cfg.productions; 
     terminals = List.fold_left (fun s o -> match o with | T o -> (TSet.add o s) | _ -> s) cfg.terminals out; 
-    nonterminals = List.fold_left (fun s o -> match o with | N o -> (NSet.add o s) | _ -> s) cfg.nonterminals out; 
+    nonterminals = List.fold_left (fun s o -> match o with | N o -> (NSet.add o s) | _ -> s) cfg.nonterminals (N nt :: out); 
     }
   let set_start cfg s = { cfg with start = s}
 
+  let nname n = "N" ^ (N.name n)
+  let tname t = "T" ^ (T.name t)
+  let pname p = 
+    let (nt, out) = p in
+    "P " ^ (nname nt) ^ " -> " ^ (List.fold_left (fun str sym -> str ^ " " ^ (match sym with | T t -> (tname t) | N n -> (nname n))) "" out)
+
   let gen_nt_symbols context nonterminals prefix = 
     let m = NMap.empty in 
-    let consts = List.mapi (fun ind _ -> mk_const context (mk_symbol context ~name:(prefix^(string_of_int ind)) `TyInt)) nonterminals in
+    let consts = List.map (fun n -> mk_const context (mk_symbol context ~name:(prefix^(nname n)) `TyInt)) nonterminals in
     let rec gen_map ls1 ls2 m = 
       match (ls1, ls2) with 
       | (h1::t1), (h2::t2) -> gen_map t1 t2 (NMap.add h1 h2 m)
@@ -47,9 +58,9 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
     in
     gen_map nonterminals consts m 
 
-  let gen_p_symbols context productions prefix = 
+  let gen_p_symbols context productions = 
     let m = PMap.empty in 
-    let consts = List.mapi (fun ind _ -> mk_const context (mk_symbol context ~name:(prefix^(string_of_int ind)) `TyInt)) productions in 
+    let consts = List.map (fun p -> mk_const context (mk_symbol context ~name:(pname p) `TyInt)) productions in 
     let rec gen_map ls1 ls2 m = 
       match (ls1, ls2) with 
       | (h1::t1), (h2::t2) -> gen_map t1 t2 (PMap.add h1 h2 m)
@@ -66,8 +77,8 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
     let nts = NSet.elements grammar.nonterminals in
     let ts = TSet.elements grammar.terminals in
     
-    let nmapping = gen_nt_symbols context nts "N" in 
-    let pmapping = gen_p_symbols context grammar.productions "P" in
+    let nmapping = gen_nt_symbols context nts "" in 
+    let pmapping = gen_p_symbols context grammar.productions in
     let dmapping = gen_nt_symbols context nts "D" in 
 
     (* For all nonterminals, f(nt) = /sum_{nt->w} f(nt->w) *)
@@ -86,9 +97,9 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
         let (_, out) = prod in 
         List.length (List.filter (fun e -> e = s) out) 
       in
-      let prod_sum = mk_add context (List.map (fun p -> (mk_mul context [(mk_int context (count p)); (PMap.find p pmapping)])) grammar.productions) in 
+      let prod_sum = mk_add context (List.map (fun p -> (mk_mul context [(mk_int context (count p)); (PMap.find p pmapping)])) grammar.productions) in
       match s with
-      | N s when s = grammar.start -> mk_eq context (NMap.find s nmapping) (mk_add context [(mk_int context 1); prod_sum])
+      | N s when s = grammar.start -> mk_eq context (NMap.find s nmapping) (mk_add context [(mk_one context); prod_sum])
       | N s -> mk_eq context (NMap.find s nmapping) prod_sum
       | T s -> mk_eq context (mapping s) prod_sum
       in
@@ -118,8 +129,11 @@ module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) = struct
 
     let outgoing = mk_and context (List.map outgoing_sum_helper nts) in
     let incoming = mk_and context (List.map incoming_sum_helper all_symbols) in
+    let nonneg = List.map (fun t -> mk_leq context (mk_zero context) (mapping t)) ts 
+    @ List.map (fun n -> mk_leq context (mk_zero context) (NMap.find n nmapping)) nts
+    |> mk_and context in
     let dist = mk_and context (List.map dist_helper nts) in 
-    mk_and context [outgoing; incoming; dist]
+    mk_and context [outgoing; incoming; dist; nonneg]
     
 end
 

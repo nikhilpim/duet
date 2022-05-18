@@ -1,8 +1,12 @@
 (* Context Free Grammars *)
 
+module type Symbol = sig 
+  type t
+  val compare : t -> t -> int
+  val name: t -> string
+end
 
-
-module MakeCFG (N : Map.OrderedType) (T : Map.OrderedType) : (sig
+module MakeCFG (N : Symbol) (T : Symbol) : (sig
   type terminal = T.t
   type nonterminal = N.t
   type gsymbol = T of terminal | N of nonterminal

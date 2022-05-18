@@ -10,6 +10,7 @@ module C = Graph.Components.Make(U)
 module IntPair = struct
   type t = int * int [@@deriving ord, eq]
   let hash = Hashtbl.hash
+  let name (i, j) = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ")"
 end
 
 module N = IntPair  
@@ -748,16 +749,15 @@ module RecGraph = struct
     let paths = omega_pathexpr query.query in
     Pathexpr.eval_omega ~table:omega_table ~algebra ~omega_algebra paths
 
-  
-  let gen_cfg query tgt = 
-
-    let cfg = CFG.empty (query.src, tgt) in 
+(** Generate a CFG representing the possible runs of query *)
+  let gen_cfg query = 
+    let cfg = CFG.empty (query.src, query.src) in 
     let wg = query.recgraph.path_graph in
     let ce = query.recgraph.call_edges in
 
-    let nt_ends = tgt :: M.fold (fun _ (_, call_end) acc -> call_end :: acc) ce [] in 
+    let nt_ends = M.fold (fun _ (_, call_end) acc -> call_end :: acc) ce [] in 
 
-    (* To be applied to every edge (v_1, v_2) in the CFG. If the edge is a call edge, 
+    (* To be applied to every edge (v_1, v_2) in the weighted graph. If the edge is a call edge, 
     adds N(v_1, end) -> N(call) N(v_2, end) where call is the call of (v_1, v_2) and end
     is every possible nonterminal target. If the edge is not a call edge, adds
     N(v_1, end) -> T(v_1, v_2) N(v_2)  *)
@@ -790,61 +790,58 @@ module RecGraph = struct
       
       let weight_query = mk_weight_query path_query algebra in
       let callgraph = mk_callgraph path_query in
-      let project x = algebra (`Segment x) in 
       let linear_summaries = HT.create 991 in
       let to_align = HT.create 991 in 
       let call_edges = path_query.recgraph.call_edges in 
-      let cfg = gen_cfg path_query (991) in
+      let cfg = gen_cfg path_query in
 
       (* 1. For each non-loop edge, compute the affine hull of the weight of the edge. *)
       let linear_basis = (S.mk_one context) :: List.map (fun (pre, post) -> S.mk_sub context (S.mk_const context pre) (S.mk_const context post)) symbol_pairs in
+      let cut_const_term v = L.QQVector.of_enum (BatEnum.filter_map (fun (e, d) -> if (d >= 1) then Option.some (e, d-1) else Option.none) (L.QQVector.enum v)) in 
 
-      List.iter (fun i -> 
-        match i with 
-        | `Vertex i ->
-          let aff = Ab.vanishing_space context (get_tf (call_weight weight_query i)) (Array.of_list (linear_basis)) in
-          (match aff with 
-          | _ :: a -> 
-            HT.add linear_summaries i (L.QQVectorSpace.matrix_of aff);
-            HT.add to_align i (L.QQVectorSpace.matrix_of a);
-          | _ -> (assert false))
-        | `Loop _ -> ())
-        (CallGraphLoop.loop_nest callgraph);
+      iter_edges (fun (v_1, p, v_2)  -> 
+        if not (M.mem (v_1, v_2) call_edges) then 
+          let f = Pathexpr.eval ~algebra p in 
+          let aff = Ab.vanishing_space context (get_tf f) (Array.of_list (linear_basis)) in
+          let ali = List.map cut_const_term aff in 
+          match aff with 
+            | _ :: _ -> 
+              HT.add linear_summaries (v_1, v_2) (L.QQVectorSpace.matrix_of aff);
+              HT.add to_align (v_1, v_2) (L.QQVectorSpace.matrix_of ali);
+            | _ -> 
+              HT.add linear_summaries (v_1, v_2) Q.zero;
+              HT.add to_align (v_1, v_2) Q.zero;)
+        path_query.recgraph.path_graph; 
 
       (* 2. Between all pairs of edges, use pushout to ensure commutability *)
-      let fix ls = 
-        match ls with 
-        | [] -> ()
-        (* to_adj contains all keys which are already aligned with init. All such keys are
-        kept consistent with the ongoing alignment.
-        Possible optimization: Alignment only really needs to be done over connected components. *)
-        | (init, _) :: rst -> (
-          let (_, _) = List.fold_left (fun (to_adj, fst) (k, _) -> 
-            let nxt = HT.find to_align k in 
-            let cM, dM = L.pushout fst nxt in
-            let fst = Q.mul cM fst in
-            HT.replace linear_summaries k (Q.mul dM (HT.find linear_summaries k));
-            List.iter (fun a -> HT.replace linear_summaries a (Q.mul cM (HT.find linear_summaries a))) to_adj;
-            (k :: to_adj, fst)
+      let fix_call (v_1, _) = 
+        let relevant_edges = fold_reachable_edges (fun e_1 e_2 ls -> 
+            (e_1, e_2) :: ls
+          ) path_query.recgraph.path_graph v_1 [] in 
+          match relevant_edges with
+          | [] -> ()
+          | init :: rst -> (
+            (* to_adj contains all keys which are already aligned with init. All such keys are
+            kept consistent with the ongoing alignment. *)
+            let _ = List.fold_left (fun (to_adjust, fst) edge ->
+              let nxt = HT.find to_align edge in 
+              let cM, dM = L.pushout fst nxt in 
+              let fst = Q.mul cM fst in 
+              HT.replace linear_summaries edge (Q.mul dM (HT.find linear_summaries edge));
+              List.iter (fun a -> HT.replace linear_summaries a (Q.mul cM (HT.find linear_summaries a))) to_adjust;
+              (edge :: to_adjust, fst)
             ) ([init], (HT.find to_align init)) rst in ()) in
-
-      fix (HT.to_list to_align);
+      BatEnum.iter fix_call (M.values call_edges);
 
       (* 3. For each non-loop edge, use the normal summary. If not, use the CFG to compute a parikh image based on the start and 
       update variables based on the resulting arithmetic terms. *)
       let build = function 
       | `Vertex call ->
-        call_weight weight_query call
-        |> project 
-        |> set_summary weight_query call
-      | `Loop call -> 
-        let header = CallGraphLoop.header call in 
-        let call = M.find header call_edges in 
-        let cfg = CFG.set_start cfg call in 
-        let parikh_terms = HT.create 991 in
+        let cfg = CFG.set_start cfg call in
+        let parikh_terms = HT.create 991 in 
         HT.iter (fun k _ ->
-           (HT.add parikh_terms k 
-           (Syntax.mk_const context (Syntax.mk_symbol context ~name:("T"^(string_of_int (fst k))^(string_of_int (snd k))) `TyInt)))) linear_summaries;
+          (HT.add parikh_terms k 
+          (Syntax.mk_const context (Syntax.mk_symbol context ~name:("T"^(string_of_int (fst k))^","^(string_of_int (snd k))) `TyInt)))) linear_summaries;
         let parikh = CFG.parikh context cfg (fun t -> HT.find parikh_terms t) in
         let resolve_row rowi row = 
           let (pre_terms, post_terms) = BatEnum.fold (fun (pre_terms, post_terms) (v, i) -> 
@@ -854,7 +851,7 @@ module RecGraph = struct
             let post = S.mk_mul context [(S.mk_const context post_term); (S.mk_real context v)] in 
             (pre :: pre_terms, post :: post_terms)
             ) ([], []) (L.QQVector.enum row) in 
-          let b = HT.fold (fun k v lst -> (S.mk_mul context [v; S.mk_real context (Q.entry rowi 1 (HT.find linear_summaries k))]) :: lst ) parikh_terms [] in 
+          let b = HT.fold (fun k v lst -> (S.mk_mul context [v; S.mk_real context (Q.entry rowi 0 (HT.find linear_summaries k))]) :: lst ) parikh_terms [] in 
           S.mk_eq context (S.mk_add context post_terms) (S.mk_add context (pre_terms @ b))
         in 
         let (_, some_mat) = List.hd (HT.to_list linear_summaries) in
@@ -863,8 +860,8 @@ module RecGraph = struct
         |> S.mk_and context in 
         let formula = S.mk_and context [parikh ; transform] in
         let transition = construct formula symbol_pairs in 
-        set_summary weight_query header transition
-        
+        set_summary weight_query call transition;
+      | `Loop _ -> ()
       in 
 
       List.iter build (CallGraphLoop.loop_nest callgraph);

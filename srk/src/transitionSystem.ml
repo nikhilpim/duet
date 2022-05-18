@@ -90,7 +90,7 @@ module Make
     (* Gets the formula representation of a transition, adding in unset global variables *)
     let get_tf t = 
       let tf =  (T.to_transition_formula t) in
-      let unincluded_gvars = S.filter (fun v -> (not (TransitionFormula.exists tf (Var.symbol_of v)))) all_gvars in
+      let unincluded_gvars = S.filter (fun v -> (not (T.mem_transform v t))) all_gvars in
       (S.fold (fun v ls -> 
           let (pre, post) = T.symbol_pair v in
         (Syntax.mk_eq C.context (Syntax.mk_const C.context pre) (Syntax.mk_const C.context post)) :: ls) unincluded_gvars []) 
