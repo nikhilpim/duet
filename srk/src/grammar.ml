@@ -1,9 +1,10 @@
 open Syntax
+open Batteries 
 
 module type Symbol = sig 
   type t
   val compare : t -> t -> int
-  val name: t -> string
+  val str: t -> string
 end
 
 module MakeCFG (N : Symbol) (T : Symbol) = struct
@@ -31,7 +32,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     start = s;
     productions = [];
     terminals = TSet.empty;
-    nonterminals = NSet.empty;
+    nonterminals = NSet.singleton(s);
   }
 
   let add_production cfg nt out = { cfg 
@@ -41,8 +42,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     }
   let set_start cfg s = { cfg with start = s}
 
-  let nname n = "N" ^ (N.name n)
-  let tname t = "T" ^ (T.name t)
+  let nname n = "N" ^ (N.str n)
+  let tname t = "T" ^ (T.str t)
   let pname p = 
     let (nt, out) = p in
     "P " ^ (nname nt) ^ " -> " ^ (List.fold_left (fun str sym -> str ^ " " ^ (match sym with | T t -> (tname t) | N n -> (nname n))) "" out)
@@ -135,5 +136,50 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let dist = mk_and context (List.map dist_helper nts) in 
     mk_and context [outgoing; incoming; dist; nonneg]
     
+  let is_weak_labelable grammar = 
+    List.fold_left (fun b (_, out) -> b && (List.length out <= 2)) true grammar.productions
+    
+  let weak_labeled grammar get_ith_nt get_ith_t = 
+    assert (is_weak_labelable grammar);
+    let n = TSet.cardinal grammar.terminals in 
+    let all_prods = BatEnum.fold (fun ls index -> 
+      List.map (fun (nt, out) -> 
+        ((get_ith_nt index nt), List.map (fun s -> 
+          match s with 
+          | T t -> T (get_ith_t index t)
+          | N n -> N (get_ith_nt index n)
+          ) out)) grammar.productions @ ls
+      ) [] (1--(n+1)) in 
+    
+    let ind i j = (i * n) + j + 1 in 
+
+    let all_prods = List.fold_left (fun ls prod ->
+      let pairs = BatEnum.fold (fun ls i -> 
+        BatEnum.fold (fun ls j -> (i, j) :: ls) ls (i--(n))
+        ) [] (1--(n)) in 
+      match prod with
+      | (_, []) -> ls 
+      | (nt, [N out]) -> List.fold_left (fun ls (i, j) -> ((get_ith_nt (ind i j) nt), [N (get_ith_nt (ind i j) out)]) :: ls ) ls pairs
+      | (nt, [T out]) -> List.fold_left (fun ls (i, j) -> if i == j then ((get_ith_nt (ind i j) nt), [T (get_ith_t (ind i j) out)]) :: ls else ls) ls pairs
+      | (nt, [T out; N out2]) -> List.fold_left (fun ls (i, j) -> 
+        let ls = ((get_ith_nt (ind i j) nt), [T (get_ith_t i out); N (get_ith_nt (ind i j) out2)]) :: ls in 
+        if (i+1) <= j then ((get_ith_nt (ind i j) nt), [T (get_ith_t (ind i i) out); N (get_ith_nt (ind (i+1) j) out2)]) :: ls else ls
+        ) ls pairs
+      | (nt, [N out; T out2]) -> List.fold_left (fun ls (i, j) -> 
+        let ls = ((get_ith_nt (ind i j) nt), [N (get_ith_nt (ind i j) out); T (get_ith_t (j+1) out2)]) :: ls in 
+        if i <= (j-1) then ((get_ith_nt (ind i j) nt), [N (get_ith_nt (ind i (j-1)) out); T (get_ith_t (ind j j) out2)]) :: ls else ls
+        ) ls pairs
+      | (nt, [N out; N out2]) -> List.fold_left (fun ls (i, j) -> 
+        let ls = ((get_ith_nt (ind i j) nt), [N (get_ith_nt (ind i j) out); N (get_ith_nt (j+1) out2)]) :: ls in 
+        let ls = ((get_ith_nt (ind i j) nt), [N (get_ith_nt i out); N (get_ith_nt (ind i j) out2)]) :: ls in 
+        BatEnum.fold (fun ls k -> ((get_ith_nt (ind i j) nt), [N (get_ith_nt (ind i k) out); N (get_ith_nt (ind (k+1) j) out2)]) :: ls) ls (i--^j)
+        ) ls pairs
+      | _ -> assert false
+      ) all_prods grammar.productions in 
+
+    let new_start = get_ith_nt 0 grammar.start in 
+    let all_prods = BatEnum.fold (fun ls i -> (new_start, [N (get_ith_nt (ind i n) grammar.start)]) :: ls) all_prods (1--n) in 
+    let all_prods = (new_start, [N (get_ith_nt (n+1) grammar.start)]) :: all_prods in  
+    List.fold_left (fun cfg (nt, out) -> add_production cfg nt out) (empty new_start) all_prods
 end
 

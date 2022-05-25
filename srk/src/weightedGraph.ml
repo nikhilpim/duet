@@ -10,12 +10,12 @@ module C = Graph.Components.Make(U)
 module IntPair = struct
   type t = int * int [@@deriving ord, eq]
   let hash = Hashtbl.hash
-  let name (i, j) = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ")"
+  let str (i, j : t)  = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ")"
 end
 
 module N = IntPair  
 module T = IntPair
-module CFG = Cfg.MakeCFG(N)(T)
+module CFG = Grammar.MakeCFG(N)(T)
 
 module M = BatMap.Make(IntPair)
 
@@ -824,12 +824,13 @@ module RecGraph = struct
             (* to_adj contains all keys which are already aligned with init. All such keys are
             kept consistent with the ongoing alignment. *)
             let _ = List.fold_left (fun (to_adjust, fst) edge ->
+              if not (M.mem edge call_edges) then 
               let nxt = HT.find to_align edge in 
               let cM, dM = L.pushout fst nxt in 
               let fst = Q.mul cM fst in 
               HT.replace linear_summaries edge (Q.mul dM (HT.find linear_summaries edge));
               List.iter (fun a -> HT.replace linear_summaries a (Q.mul cM (HT.find linear_summaries a))) to_adjust;
-              (edge :: to_adjust, fst)
+              (edge :: to_adjust, fst) else (to_adjust, fst)
             ) ([init], (HT.find to_align init)) rst in ()) in
       BatEnum.iter fix_call (M.values call_edges);
 
@@ -841,7 +842,7 @@ module RecGraph = struct
         let parikh_terms = HT.create 991 in 
         HT.iter (fun k _ ->
           (HT.add parikh_terms k 
-          (Syntax.mk_const context (Syntax.mk_symbol context ~name:("T"^(string_of_int (fst k))^","^(string_of_int (snd k))) `TyInt)))) linear_summaries;
+          (Syntax.mk_const context (Syntax.mk_symbol context ~name:("T"^IntPair.str k) `TyInt)))) linear_summaries;
         let parikh = CFG.parikh context cfg (fun t -> HT.find parikh_terms t) in
         let resolve_row rowi row = 
           let (pre_terms, post_terms) = BatEnum.fold (fun (pre_terms, post_terms) (v, i) -> 
