@@ -12,9 +12,13 @@ module MakeCFG (N : Symbol) (T : Symbol) : (sig
   type gsymbol = T of terminal | N of nonterminal
   type production
   type t
+  val size : t -> int * int * int
   val empty: nonterminal -> t
   val add_production: t -> nonterminal -> gsymbol list -> t
+  val nonterminals: t -> nonterminal list 
+  val terminals: t -> terminal list 
   val set_start: t -> nonterminal -> t
+  val prune: t -> t
   val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> 'a Syntax.formula
-  val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> t
+  val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> t
   end)
