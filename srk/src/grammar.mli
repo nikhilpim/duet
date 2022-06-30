@@ -20,5 +20,5 @@ module MakeCFG (N : Symbol) (T : Symbol) : (sig
   val set_start: t -> nonterminal -> t
   val prune: t -> t
   val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> 'a Syntax.formula
-  val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> t
+  val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> int -> t
   end)

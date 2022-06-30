@@ -185,7 +185,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
   let is_weak_labelable grammar = 
     PSet.fold (fun (_, out) b  -> b && (List.length out <= 2)) grammar.productions true
     
-  (* Generates grammar to produce "weak labelings" of input grammar, marking k symbols in each word
+  (* Generates grammar to produce "weak labelings" of input grammar, marking n symbols in each word
   Any word w in the language of the original grammar will be decomposed as follows:
   w -> w_0 t_0 w_1 t_1 ... t_k w_k for some 0 <= k <= |T|
   get_ith_nt and get_ith_t need to return unique nonterminals and terminals per natural
@@ -195,9 +195,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
   (get_ith_nt i nt) should derive w_i
   (get_ith_nt (ind i j) nt) should derive w_i t_i ... t_j w_{j+1} 
   (get_ith (-1) nt) is a special dummy node for if we wish to set nt to be the start symbol*)
-  let weak_labeled grammar get_ith_nt get_ith_t ind = 
+  let weak_labeled grammar get_ith_nt get_ith_t ind n = 
     assert (is_weak_labelable grammar);
-    let n = TSet.cardinal grammar.terminals in 
 
     (* Productions for subgrammars generating w_i *)
     let all_prods = BatEnum.fold (fun ls index -> 

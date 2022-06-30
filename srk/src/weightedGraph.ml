@@ -787,7 +787,7 @@ module RecGraph = struct
       let module L = Linear in 
       let module Q = L.QQMatrix in 
       let module S = Syntax in 
-      
+
       let weight_query = mk_weight_query path_query algebra in
       let callgraph = mk_callgraph path_query in
       let add_summaries = HT.create 991 in
@@ -795,7 +795,7 @@ module RecGraph = struct
       let rectified_summaries = HT.create 991 in 
       let to_align = HT.create 991 in 
       let parikh_terms = HT.create 991 in 
-      let perm_symbols = HT.create 991 in 
+      let perm_symbols = BatHashtbl.create 991 in 
       let edge_to_ind = HT.create 991 in 
       let call_edges = path_query.recgraph.call_edges in 
       let cfg = gen_cfg path_query in
@@ -849,20 +849,34 @@ module RecGraph = struct
       | `Loop loop -> CallGraphLoop.header loop in 
         HT.clear rectified_summaries;
         HT.clear parikh_terms;
-        HT.clear perm_symbols;
+        BatHashtbl.clear perm_symbols;
         HT.clear edge_to_ind;
-        
+
         let cfg = CFG.set_start cfg call |> CFG.prune in 
         let reachable = CallSet.of_list (CFG.terminals cfg) in 
         binary_coproduct (List.map (fun e -> (e, HT.find to_align e)) (CallSet.elements reachable)) 
         (Q.identity (List.init basis_dim (fun v -> v))) [];
+        
+        let reset_vectors = BatEnum.fold (fun l summary -> (List.map snd summary) :: l) [] (HT.values rectified_summaries) in 
+        let coherence_classes = List.fold_left (fun classes rv -> 
+          List.concat (
+            List.map (fun cl ->
+              let reset = List.filter (fun v -> (List.nth rv v == 0)) cl in 
+              let unreset = List.filter (fun v -> (List.nth rv v == 1)) cl in 
+              [reset; unreset]
+            ) classes
+          )
+          |> List.filter (fun ls -> List.length ls > 0)
+          ) [List.init (List.length (HT.find rectified_summaries (List.hd (CallSet.to_list reachable)))) (fun v -> v)] 
+          reset_vectors in 
 
-        let num_edges = CallSet.cardinal reachable in
+        let num_classes = List.length coherence_classes in 
+
         let ctr = ref 0 in 
-        let ind i j = (i * num_edges) + j + (num_edges+1) in 
+        let ind i j = (i * num_classes) + j + (num_classes+1) in 
         let get_ith = (fun (i:int) e -> if HT.mem edge_to_ind e then (i, HT.find edge_to_ind e) else (incr ctr; HT.add edge_to_ind e !ctr; (i, !ctr))) in 
 
-        let int_cfg = CFG.weak_labeled cfg get_ith get_ith ind in 
+        let int_cfg = CFG.weak_labeled cfg get_ith get_ith ind num_classes in 
         let int_cfg = CFG.set_start int_cfg (get_ith (-1) call) |> CFG.prune in 
 
         let parikh = CFG.parikh context int_cfg 
@@ -871,46 +885,58 @@ module RecGraph = struct
             HT.add parikh_terms t (Syntax.mk_const context (Syntax.mk_symbol context ~name:("T"^IntPair.str t) `TyInt)));
           HT.find parikh_terms t) in
 
-        CallSet.iter (fun e -> 
-          let sym = Syntax.mk_symbol context ~name:("perm"^IntPair.str e) `TyInt
+        List.iter (fun ctr_lst -> 
+          let fst_class = List.hd ctr_lst in 
+          let sym = Syntax.mk_symbol context ~name:("perm"^(string_of_int fst_class)) `TyInt
            |> Syntax.mk_const context in 
-           HT.add perm_symbols e sym
-           ) reachable;  
+           BatHashtbl.add perm_symbols ctr_lst sym
+           ) coherence_classes;  
            
-        let strong_constraints = HT.map (fun edge sym -> 
+        let strong_constraints = BatHashtbl.map (fun ctr_lst sym -> 
+          let fst_class = List.hd ctr_lst in 
+          let reset_edges = CallSet.filter (fun edge -> 
+            let summary = HT.find rectified_summaries edge in
+            snd (List.nth summary fst_class) == 0
+            ) reachable |> CallSet.to_list in 
           (* valid permutation constraints *)
           [Syntax.mk_leq context (Syntax.mk_zero context) sym;
-            Syntax.mk_lt context sym (Syntax.mk_int context (HT.length add_summaries))] @
-          (HT.map (fun other_edge other_symbol -> if edge != other_edge then Syntax.mk_not context (Syntax.mk_eq context sym other_symbol) else Syntax.mk_true context) perm_symbols
-          |> HT.values
+            Syntax.mk_lt context sym (Syntax.mk_int context num_classes)] @
+          (BatHashtbl.map (fun other_ctr_lst other_symbol -> 
+            if not (List.mem fst_class other_ctr_lst) 
+              then Syntax.mk_not context (Syntax.mk_eq context sym other_symbol) 
+              else Syntax.mk_true context) perm_symbols
+          |> BatHashtbl.values
           |> BatEnum.fold (fun ls i -> i :: ls) []) @
           (* unique final appearances *)
-          List.filter_map (fun j -> 
-            if HT.mem parikh_terms (get_ith (ind j j) edge) then 
-              let jth_term = HT.find parikh_terms (get_ith (ind j j) edge) in 
-              Some (Syntax.mk_if context (Syntax.mk_not context (Syntax.mk_eq context sym (Syntax.mk_int context j))) 
-              (Syntax.mk_eq context (Syntax.mk_zero context) jth_term))
-            else None) (List.init num_edges (fun v -> v)) @
+          List.concat (List.map (fun edge ->
+            List.filter_map (fun j -> 
+              if HT.mem parikh_terms (get_ith (ind j j) edge) then 
+                let jth_term = HT.find parikh_terms (get_ith (ind j j) edge) in 
+                Some (Syntax.mk_if context (Syntax.mk_not context (Syntax.mk_eq context sym (Syntax.mk_int context j))) 
+                (Syntax.mk_eq context (Syntax.mk_zero context) jth_term))
+              else None) (List.init num_classes (fun v -> v))) reset_edges) @
           (* word constraints *)
-          List.filter_map (fun j -> 
-            if HT.mem parikh_terms (get_ith j edge) 
-              then Some (Syntax.mk_if context (Syntax.mk_lt context sym (Syntax.mk_int context j)) 
-                (Syntax.mk_eq context (Syntax.mk_zero context) (HT.find parikh_terms (get_ith j edge))))
-              else None
-            ) (List.init (num_edges+1) (fun v-> v))
+          List.concat (List.map (fun edge ->
+            List.filter_map (fun j -> 
+              if HT.mem parikh_terms (get_ith j edge) 
+                then Some (Syntax.mk_if context (Syntax.mk_lt context sym (Syntax.mk_int context j)) 
+                  (Syntax.mk_eq context (Syntax.mk_zero context) (HT.find parikh_terms (get_ith j edge))))
+                else None
+              ) (List.init (num_classes+1) (fun v-> v))) reset_edges)
           ) perm_symbols 
-        |> HT.values |> BatEnum.fold (fun ls expr -> expr @ ls) [] |> Syntax.mk_and context in 
-        
+        |> BatHashtbl.values |> BatEnum.fold (fun ls expr -> expr @ ls) [] |> Syntax.mk_and context in 
+
         let resolve_row rowi row = 
           let edge_summaries = HT.fold (fun edge summary acc -> (edge, snd (List.nth summary rowi)) :: acc) rectified_summaries [] in
           let reset_edges = List.filter (fun (_, ind) -> ind == 0) edge_summaries
           |> List.map fst 
           in
           let offsets = HT.map (fun _ summary -> 
-              List.nth summary rowi 
+              let ofs = List.nth summary rowi 
               |> fst 
               |> L.QQVector.coeff 0
-              |> S.mk_real context
+              |> S.mk_real context in
+            S.mk_mul context [ofs; S.mk_neg context (S.mk_one context)]           
             ) rectified_summaries in 
           (* Term representing the sum of all additions occuring in w_{i+1} t_{i+1} ... *)
           let alpha i = 
@@ -921,13 +947,13 @@ module RecGraph = struct
                     HT.find parikh_terms (get_ith j edge); 
                     offset
                   ] :: acc
-                ) [] (List.filter (fun j -> HT.mem parikh_terms (get_ith j edge)) (List.init (num_edges - i) (fun z -> z + i + 1))) in 
+                ) [] (List.filter (fun j -> HT.mem parikh_terms (get_ith j edge)) (List.init (num_classes - i) (fun z -> z + i + 1))) in 
               let from_marked = List.fold_left (fun acc j -> 
                   S.mk_mul context [
                     HT.find parikh_terms (get_ith (ind j j) edge);
                     offset
                   ] :: acc
-                ) [] (List.filter (fun j -> HT.mem parikh_terms (get_ith (ind j j) edge)) (List.init (num_edges - i - 1) (fun z -> z + i + 1))) in 
+                ) [] (List.filter (fun j -> HT.mem parikh_terms (get_ith (ind j j) edge)) (List.init (num_classes - i - 1) (fun z -> z + i + 1))) in 
                 from_word @ from_marked @ ls
               ) rectified_summaries [] 
               |> S.mk_add context 
@@ -941,25 +967,36 @@ module RecGraph = struct
             ) ([], []) (L.QQVector.enum row) in 
           let x = S.mk_add context pre_terms in 
           let x' = S.mk_add context post_terms in 
-          let reset_permutations = List.map (fun edge -> edge, HT.find perm_symbols edge) reset_edges in 
+
+          let coherence_class = List.filter (List.mem rowi) coherence_classes in
+          assert (List.length coherence_class == 1);
+          let coherence_class = List.hd coherence_class in 
+          let permutation_symbol = BatHashtbl.find perm_symbols coherence_class in
+
           let formula = 
-            if List.length reset_permutations == 0 
+            if List.length reset_edges == 0 
               then S.mk_eq context x' (S.mk_add context [x; alpha (-1)])
-              else
-              List.fold_left (fun ls (edge, perm_sym) ->
-              let is_max = List.fold_left (fun acc (_, other_perm_sym) -> S.mk_leq context other_perm_sym perm_sym :: acc) [] reset_permutations  
-              |> S.mk_and context in
-              let last_reset_at = List.map (fun i ->
-                let is_eq = S.mk_eq context perm_sym (S.mk_int context i) in
-                let was_reset = S.mk_eq context (HT.find parikh_terms (get_ith (ind i i) edge)) (S.mk_one context) in
-                let offset = HT.find offsets edge in 
-                let reset_case = S.mk_and context [was_reset; S.mk_eq context x' (S.mk_add context [offset; alpha i])] in 
-                let unreset_case = S.mk_and context [S.mk_not context was_reset; S.mk_eq context x' (S.mk_add context [x; alpha i])] in 
-                S.mk_if context is_eq (S.mk_or context [reset_case; unreset_case])
-                ) (List.init (num_edges) (fun z -> z)) in 
-              S.mk_if context is_max (S.mk_and context last_reset_at) :: ls
-              ) [] reset_permutations
-              |> S.mk_and context 
+              else (
+                let last_reset_at = List.map (fun i ->
+                  let is_eq = S.mk_eq context permutation_symbol (S.mk_int context i) in
+                  let reset_cases = List.map (fun edge -> 
+                    let was_reset = if (HT.mem parikh_terms (get_ith (ind i i) edge))
+                      then S.mk_eq context (HT.find parikh_terms (get_ith (ind i i) edge)) (S.mk_one context)
+                      else S.mk_false context in
+                    let offset = HT.find offsets edge in 
+                    let resulting_transform = S.mk_eq context x' (S.mk_add context [offset; alpha i]) in 
+                    S.mk_and context [was_reset; resulting_transform]
+                    ) reset_edges in 
+                  let all_edges_zero = List.filter_map (fun edge -> if (HT.mem parikh_terms (get_ith (ind i i) edge))
+                    then Some (HT.find parikh_terms (get_ith (ind i i) edge)) else None) reset_edges 
+                  |> S.mk_add context 
+                  |> S.mk_eq context (S.mk_zero context)
+                  in 
+                  let unreset_case = S.mk_and context [all_edges_zero; S.mk_eq context x' (S.mk_add context [x; alpha i])] in 
+                  S.mk_if context is_eq (S.mk_or context (unreset_case :: reset_cases))
+                ) (List.init num_classes (fun v -> v)) in 
+                S.mk_and context last_reset_at
+                )
           in
           formula
         in 
