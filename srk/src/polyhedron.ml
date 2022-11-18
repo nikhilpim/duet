@@ -401,53 +401,58 @@ let of_apron0 man abstract0 =
     P.top
     (Abstract0.to_lincons_array man abstract0)
 
-let dual_cone dim polyhedron =
+let constrained_dual_cone dim polyhedron offset = 
   (* Given polyhedron Ax >= b, form the constraint system
-     lambda * A = y /\ lambda * b >= 0.
-     Then project out the lambda dimensions.
+    lambda * A = y /\ -1^neg * (lambda * b - offset) >= 0.
+    Then project out the lambda dimensions.
    *)
   (* map [0 .. nb_constraints] to [dim .. dim + nb_constraints] *)
   assert (dim >= max_constrained_dim polyhedron);
-  let lambda i = dim + i in
-  let lambda_nonnegative =
-    BatEnum.foldi
+  let lambda i = dim + i in 
+  let lambda_nonnegative = 
+    BatEnum.foldi 
       (fun i (cmp, _) constraints ->
-        match cmp with
+        match cmp with 
         | `Zero -> constraints
-        | `Nonneg | `Pos ->
-           P.add (`Nonneg, V.of_term QQ.one (lambda i)) constraints)
+        | `Nonneg | `Pos -> 
+          P.add (`Nonneg, V.of_term QQ.one (lambda i)) constraints)
       P.top
       (P.enum polyhedron)
-  in
-  let farkas_constraints =
-    let zero =
+    in
+  let farkas_constraints = 
+    let zero = 
       BatEnum.fold
         (fun map dim -> IntMap.add dim (V.of_term (QQ.of_int (-1)) dim) map)
         IntMap.empty
         (0 -- (dim - 1))
     in
-    let (lambdaA, lambdab) =
-      BatEnum.foldi
-        (fun i (_, t) (lambdaA, lambdab) ->
-          BatEnum.fold
-            (fun (lambdaA, lambdab) (scalar, dim) ->
-              if dim == Linear.const_dim then
-                (lambdaA, V.add_term (QQ.negate scalar) (lambda i) lambdab)
-              else
-                (IntMap.modify dim (V.add_term scalar (lambda i)) lambdaA, lambdab))
-            (lambdaA, lambdab)
-            (V.enum t))
-        (zero, V.zero)
-        (P.enum polyhedron)
-    in
+      let (lambdaA, lambdab) =
+        BatEnum.foldi
+          (fun i (_, t) (lambdaA, lambdab) ->
+            BatEnum.fold
+              (fun (lambdaA, lambdab) (scalar, dim) ->
+                if dim == Linear.const_dim then
+                  (lambdaA, V.add_term (QQ.negate scalar) (lambda i) lambdab)
+                else
+                  (IntMap.modify dim (V.add_term scalar (lambda i)) lambdaA, lambdab))
+              (lambdaA, lambdab)
+              (V.enum t))
+          (zero, V.zero)
+          (P.enum polyhedron)
+      in
+    let lambdab = V.add_term (QQ.negate (QQ.of_int offset)) Linear.const_dim lambdab in 
+
     IntMap.fold (fun _ t constraints ->
-        P.add (`Zero, t) constraints)
-      lambdaA
-      (P.add (`Nonneg, lambdab) lambda_nonnegative)
+      P.add (`Zero, t) constraints)
+    lambdaA
+    (P.add (`Nonneg, lambdab) lambda_nonnegative)
   in
   project
     (BatList.of_enum (dim -- (P.cardinal polyhedron + dim - 1)))
     farkas_constraints
+
+let dual_cone dim polyhedron =
+  constrained_dual_cone dim polyhedron 0
 
 let enum_generators dim polyhedron =
   let open Apron in

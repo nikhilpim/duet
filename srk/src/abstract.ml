@@ -160,6 +160,15 @@ let abstract ?exists:(p=fun _ -> true) srk man phi =
   Smt.Solver.add solver [phi];
   Log.time "Abstraction" go (SrkApron.bottom man env_proj)
 
+  let convex_hull srk phi symbols = 
+    let phi = rewrite srk ~down:(nnf_rewriter srk) phi in 
+    let cs = CS.mk_empty srk in 
+    List.iter (fun sym -> CoordinateSystem.admit_cs_term cs (`App (sym, []))) symbols;
+    let polka = Polka.manager_alloc_loose () in 
+    abstract ~exists:(fun e -> List.mem e symbols) srk polka phi
+    |> SrkApron.formula_of_property
+    |> Polyhedron.of_formula cs, cs
+    
 module Sign = struct
 
   type sign = Zero | NonNeg | Neg | NonPos | Pos  | Top

@@ -106,6 +106,9 @@ module V = struct
 
   let typ v = tr_typ (Var.get_type (var_of_value v))
 
+  let fresh name = 
+    VVal (Var.mk (Varinfo.mk_global name (Concrete (Int 8)))) 
+
   let symbol_of var =
     if ValueHT.mem var_to_sym var then
       ValueHT.find var_to_sym var
@@ -115,7 +118,7 @@ module V = struct
       Hashtbl.add sym_to_var sym var;
       sym
     end
-
+  
   let of_symbol sym =
     if Hashtbl.mem sym_to_var sym then
       Some (Hashtbl.find sym_to_var sym)
@@ -651,10 +654,10 @@ let make_transition_system rg =
 
         let entry = (RG.block_entry rg block).did in
         let exit = (RG.block_exit rg block).did in
-        let point_of_interest v =
+        let _point_of_interest v =
           v = entry || v = exit || SrkUtil.Int.Map.mem v (!assertions)
         in
-        let tg = TS.simplify point_of_interest tg in
+        (* let tg = TS.simplify point_of_interest tg in *)
         let tg = TS.remove_temporaries tg in
         let tg =
           if !forward_inv_gen then
@@ -677,13 +680,16 @@ let make_transition_system rg =
   in
   (ts, !assertions)
 
-let mk_query ts entry =
+let _mk_iterative_query ts entry =
   TS.mk_query ts entry
     (if !monotone then
        (module MonotoneDom)
      else
        (module TransitionDom))
 
+let mk_query ts entry =
+  TS.mk_cfg_query ts entry
+      
 let analyze file =
   populate_offset_table file;
   match file.entry_points with

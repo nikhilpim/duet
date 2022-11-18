@@ -6,7 +6,7 @@ include Log.Make(struct let name = "srk.transitionSystem" end)
 module WG = WeightedGraph
 module Int = SrkUtil.Int
 
-type 'a label =
+type 'a label = 'a CfgSummarizer.label = 
   | Weight of 'a
   | Call of int * int
 
@@ -19,6 +19,7 @@ module Make
        type t
        val pp : Format.formatter -> t -> unit
        val typ : t -> [ `TyInt | `TyReal ]
+       val fresh : string -> t
        val compare : t -> t -> int
        val symbol_of : t -> symbol
        val of_symbol : symbol -> t option
@@ -53,65 +54,18 @@ module Make
   type query = T.t WG.RecGraph.weight_query
 
   let mk_cfg_query ts source = 
-    let module S = Set.Make(Var) in
-    let rg =
-      WG.fold_vertex
-        (fun v rg -> WG.RecGraph.add_vertex rg v)
-        ts
-        (WG.RecGraph.empty ())
-      |> WG.fold_edges (fun (u, w, v) rg ->
-             match w with
-             | Call (en,ex) ->
-                WG.RecGraph.add_call_edge rg u (en,ex) v
-             | Weight _ -> WG.RecGraph.add_edge rg u v)
-           ts
-    in
-    let algebra = function
-      | `Edge (u,v) ->
-         begin match WG.edge_weight ts u v with
-         | Weight w -> w
-         | Call _ -> assert false
-         end
-      | `Add (x, y) -> T.add x y
-      | `Mul (x, y) -> T.mul x y
-      | `Star x -> T.star x
-      | `Segment x -> T.exists Var.is_global x
-      | `Zero -> T.zero
-      | `One -> T.one
-    in
-    (* A set of all global variables in the graph *)
-    let all_gvars = WG.fold_edges (fun (_, w, _) s -> 
-              match w with 
-              | Weight t -> BatEnum.fold (fun s (var, _) -> if Var.is_global var then (S.add var s) else s) s (T.transform t)
-              | Call _ -> s
-      
-      ) ts S.empty 
-    in
-    (* Gets the formula representation of a transition, adding in unset global variables *)
-    let get_tf t = 
-      let tf =  (T.to_transition_formula t) in
-      let unincluded_gvars = S.filter (fun v -> (not (T.mem_transform v t))) all_gvars in
-      (S.fold (fun v ls -> 
-          let (pre, post) = T.symbol_pair v in
-        (Syntax.mk_eq C.context (Syntax.mk_const C.context pre) (Syntax.mk_const C.context post)) :: ls) unincluded_gvars []) 
-        |> List.cons (TransitionFormula.formula tf)
-        |> Syntax.mk_and C.context 
-    in
-
-    let symbol_pairs = List.map T.symbol_pair (S.elements all_gvars)
-        in
-
-    WG.RecGraph.summarize_cfg
-      (WG.RecGraph.mk_query rg source)
-      algebra
-      get_tf
-      C.context
-      symbol_pairs
-      (fun fr ls -> T.construct fr (List.map (fun (pre, post) -> 
-        match (Var.of_symbol pre) with
-        | Some c -> (c, Syntax.mk_const C.context post)
-        | None -> assert false 
-        ) ls))
+    let module M = BatMap.Make(WG.IntPair) in 
+    let module G = struct 
+      let graph = ts
+      let src = source
+      let path_graph = WG.RecGraph.path_graph
+      let call_edges = WG.RecGraph.call_edges
+      let context = WG.RecGraph.context 
+      let fold_reachable_edges = WG.RecGraph.fold_reachable_edges
+      let scc = (fun call graph -> WG.RecGraph.scc_calls graph call)
+    end in 
+    let module S = CfgSummarizer.CfgSummarizer(C)(Var)(T)(G) in
+    WG.RecGraph.summarize_cfg source S.rg S.algebra S.summarize
 
   let mk_query ?(delay=1) ts source dom =
     let rg =

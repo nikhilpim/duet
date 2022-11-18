@@ -27,6 +27,12 @@ module U : Graph.Sig.G with type V.t = int
 (** Context free grammars *)
 module CFG : sig type t end
 
+module IntPair : sig
+   type t = int * int [@@deriving ord, eq]
+   val hash : t -> int
+   val show : t -> string
+end
+
 type vertex = int
 
 (** Create an empty weighted graph over the given algebra of weights. *)
@@ -64,6 +70,8 @@ val cut_graph : 'a t -> vertex list -> 'a t
 
 (** Remove a vertex from a graph. *)
 val remove_vertex : 'a t -> vertex -> 'a t
+
+val remove_edge : 'a t -> vertex -> vertex -> 'a t
 
 (** [contract g v] removes vertex [v] from [g] while preserving all weighted
     paths among remaining vertices.  That is, for each pair of edges [p -pw->
@@ -168,6 +176,11 @@ module RecGraph : sig
   val add_edge : t -> vertex -> vertex -> t
   val add_call_edge : t -> vertex -> call -> vertex -> t
 
+  val path_graph : t -> Pathexpr.simple Pathexpr.t weighted_graph
+  val call_edges : t -> call BatMap.Make(IntPair).t
+  val context : t -> Pathexpr.context
+  val scc_calls : t -> call -> call list
+
   (** Create a query for computing path expressions beginning at the
      designated source vertex. *)
   val mk_query : t -> vertex -> query
@@ -194,13 +207,9 @@ module RecGraph : sig
      query maintains summaries for each call that are used to assign
      weights to call edges. *)
   val mk_weight_query : query -> 'a Pathexpr.nested_algebra -> 'a weight_query
-  
-  (* Build call summaries via CFG reachability relation. *)
-  val summarize_cfg : query ->
-                     'a Pathexpr.nested_algebra ->
-                     ('a -> 'b Syntax.formula) ->
-                     'b Syntax.context -> (Syntax.symbol * Syntax.symbol) list -> ('b Syntax.formula ->
-                        (Syntax.symbol * Syntax.symbol) list -> 'a) -> 'a weight_query
+
+  (** Build call summaries via CFG reachability relation. *)
+  val summarize_cfg : int -> t -> 'a Pathexpr.nested_algebra -> (call -> 'a) -> 'a weight_query
 
   (** Build call summaries via successive approximation. *)
   val summarize_iterative : query ->
@@ -212,6 +221,8 @@ module RecGraph : sig
   (** Find the sum of weights of all interprocedural paths beginning
      at the query's source vertex and ending at a given target. *)
   val path_weight : 'a weight_query -> vertex -> 'a
+
+  val fold_reachable_edges : (int -> int -> 'a -> 'a) -> 'b weighted_graph -> int -> 'a -> 'a
 
   (** Find the sum of weights of all intraprocedural paths through a
      given call. *)

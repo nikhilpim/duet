@@ -4,7 +4,7 @@ open Batteries
 module type Symbol = sig 
   type t
   val compare : t -> t -> int
-  val str: t -> string
+  val show: t -> string
 end
 
 module MakeCFG (N : Symbol) (T : Symbol) = struct
@@ -49,8 +49,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
   let nonterminals cfg = NSet.elements cfg.nonterminals
   let terminals cfg  = TSet.elements cfg.terminals
 
-  let nname n = "N" ^ (N.str n)
-  let tname t = "T" ^ (T.str t)
+  let nname n = "N" ^ (N.show n)
+  let tname t = "T" ^ (T.show t)
   let pname p = 
     let (nt, out) = p in
     "P " ^ (nname nt) ^ " -> " ^ (List.fold_left (fun str sym -> str ^ " " ^ (match sym with | T t -> (tname t) | N n -> (nname n))) "" out)
@@ -117,14 +117,13 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     gen_map productions consts m
 
   (* Computes the expression describing the parikh image of the curent CFG *)
-  let parikh context grammar mapping = 
+  let parikh context grammar mapping nmapping = 
     (* Generate flow variables for each nonterminal and terminal, as well as
     a "distance" from the start nonterminal. mapping binds terminals to flow variables. *)
     let nts = NSet.elements grammar.nonterminals in
     let ts = TSet.elements grammar.terminals in
     let ps = PSet.elements grammar.productions in 
 
-    let nmapping = gen_nt_symbols context nts "" in 
     let pmapping = gen_p_symbols context ps in
     let dmapping = gen_nt_symbols context nts "D" in 
 
@@ -132,7 +131,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let outgoing_sum_helper nt = 
       let curr_prods = List.filter (fun (n, _) -> nt = n ) ps in 
       let prod_symbols = List.map (fun prod -> PMap.find prod pmapping) curr_prods in 
-      mk_eq context (NMap.find nt nmapping) (mk_add context prod_symbols)
+      mk_eq context (nmapping nt) (mk_add context prod_symbols)
     in
 
     (* For all symbols, nonterminal and terminals,
@@ -146,8 +145,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
       in
       let prod_sum = mk_add context (List.map (fun p -> (mk_mul context [(mk_int context (count p)); (PMap.find p pmapping)])) ps) in
       match s with
-      | N s when s = grammar.start -> mk_eq context (NMap.find s nmapping) (mk_add context [(mk_one context); prod_sum])
-      | N s -> mk_eq context (NMap.find s nmapping) prod_sum
+      | N s when s = grammar.start -> mk_eq context (nmapping s) (mk_add context [(mk_one context); prod_sum])
+      | N s -> mk_eq context (nmapping s) prod_sum
       | T s -> mk_eq context (mapping s) prod_sum
       in
   
@@ -169,7 +168,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
       | _ -> 
         let prods = List.filter (fun (_, lst) -> List.mem (N nt) lst) ps in
         let if_dist = mk_or context (List.map dist_cond prods) in
-        mk_if context (mk_lt context (mk_zero context) (NMap.find nt nmapping)) if_dist 
+        mk_if context (mk_lt context (mk_zero context) (nmapping nt)) if_dist 
     in
 
     let all_symbols = (List.map (fun t -> T t) ts) @ (List.map (fun n -> N n) nts) in 
@@ -177,7 +176,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let outgoing = mk_and context (List.map outgoing_sum_helper nts) in
     let incoming = mk_and context (List.map incoming_sum_helper all_symbols) in
     let nonneg = List.map (fun t -> mk_leq context (mk_zero context) (mapping t)) ts 
-    @ List.map (fun n -> mk_leq context (mk_zero context) (NMap.find n nmapping)) nts
+    @ List.map (fun n -> mk_leq context (mk_zero context) (nmapping n)) nts
+    @ List.map (fun p -> mk_leq context (mk_zero context) (PMap.find p pmapping)) ps
     |> mk_and context in
     let dist = mk_and context (List.map dist_helper nts) in 
     mk_and context [outgoing; incoming; dist; nonneg]
@@ -237,5 +237,10 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let all_prods = BatEnum.fold (fun ls i -> (List.map (fun nt -> (get_ith_nt (-1) nt), [N (get_ith_nt (ind i (n-1)) nt)]) (NSet.elements grammar.nonterminals)) @ ls) all_prods (0--^n) in 
     let all_prods = (List.map (fun nt -> (get_ith_nt (-1) nt), [N (get_ith_nt n nt)]) (NSet.elements grammar.nonterminals)) @ all_prods in  
     List.fold_left (fun cfg (nt, out) -> add_production cfg nt out) (empty (get_ith_nt (-1) grammar.start)) all_prods
+
+  let pp (fmt : Format.formatter) (grammar: t) = 
+    SrkUtil.pp_print_list (fun fmt prod ->
+      Format.fprintf fmt "@[%s @]@." (pname prod) 
+      ) fmt (PSet.to_list grammar.productions)
 end
 

@@ -29,6 +29,10 @@ val abstract : ?exists:(symbol -> bool) ->
                'a formula ->
                ('a,'abs) SrkApron.property
 
+(** [convex_hull srk phi terms] computes the strongest polyhedron 
+    (and corresponding coordinate system containing phi*)
+val convex_hull : 'a context -> 'a formula -> symbol list -> Polyhedron.t * 'a CoordinateSystem.t
+
 module Sign : sig
   type 'a t
   val abstract : 'a context -> 'a formula -> 'a arith_term list -> 'a t

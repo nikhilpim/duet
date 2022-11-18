@@ -3,7 +3,7 @@
 module type Symbol = sig 
   type t
   val compare : t -> t -> int
-  val str: t -> string
+  val show: t -> string
 end
 
 module MakeCFG (N : Symbol) (T : Symbol) : (sig
@@ -19,6 +19,7 @@ module MakeCFG (N : Symbol) (T : Symbol) : (sig
   val terminals: t -> terminal list 
   val set_start: t -> nonterminal -> t
   val prune: t -> t
-  val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> 'a Syntax.formula
+  val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> (nonterminal -> 'a Syntax.arith_term) -> 'a Syntax.formula 
   val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> int -> t
+  val pp: Format.formatter -> t -> unit
   end)

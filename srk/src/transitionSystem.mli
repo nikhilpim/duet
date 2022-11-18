@@ -13,6 +13,7 @@ module Make
        type t
        val pp : Format.formatter -> t -> unit
        val typ : t -> [ `TyInt | `TyReal ]
+       val fresh : string -> t
        val compare : t -> t -> int
        val symbol_of : t -> symbol
        val of_symbol : symbol -> t option

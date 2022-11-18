@@ -471,6 +471,10 @@ val mk_false : 'a context -> 'a formula
 (** This is syntactic sugar for intrinsic array equality *)
 val mk_arr_eq : 'a context -> 'a arr_term -> 'a arr_term -> 'a formula
 
+(** Exposing a weak check of whether or not a formula is false. 
+    Obviously, not complete. *)
+val is_false : 'a formula -> bool
+
 (** Syntactic sugar for creating arithmetic relation atoms *)
 val mk_compare : [ `Eq | `Leq | `Lt ] -> 'a context -> 'a arith_term -> 
   'a arith_term -> 'a formula

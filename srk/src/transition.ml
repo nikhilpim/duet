@@ -157,9 +157,19 @@ struct
           mk_symbol srk ~name:(Var.show var ^ "'") (Var.typ var :> typ)
         | None -> assert false)
 
-  let to_transition_formula tr =
+let to_transition_formula tr =
+    let fresh_skolem =
+      Memo.memo (fun sym ->
+          match Var.of_symbol sym with 
+          | Some _ -> mk_const srk sym
+          | None ->
+              let name = show_symbol srk sym in
+              let typ = typ_symbol srk sym in
+              mk_const srk (mk_symbol srk ~name typ))
+    in
     let (tr_symbols, post_def) =
       M.fold (fun var term (symbols, post_def) ->
+          let term = substitute_const srk fresh_skolem term in 
           let pre_sym = Var.symbol_of var in
           let post_sym = post_symbol pre_sym in
           let post_term = mk_const srk post_sym in
@@ -168,8 +178,9 @@ struct
         tr.transform
         ([], [])
     in
+    let guard = substitute_const srk fresh_skolem tr.guard in 
     let body =
-      mk_and srk (tr.guard::post_def)
+      mk_and srk (guard::post_def)
       |> rewrite srk
         ~up:(SrkSimplify.simplify_terms_rewriter srk % Nonlinear.simplify_terms_rewriter srk)
     in
