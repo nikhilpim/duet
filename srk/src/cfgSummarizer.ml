@@ -76,7 +76,7 @@ module CfgSummarizer
   let zero = mk_zero srk
   let one = mk_one srk
 
-  let _print_formula form = print_string"\n"; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
+  let _print_formula form = print_string"\n\n"; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
   let cut_first_term v = BatEnum.filter_map ((fun (e, d) -> if (d >= 1) then Some (e, d-1) else None)) 
     (V.enum v) |> V.of_enum 
 
@@ -154,6 +154,7 @@ module CfgSummarizer
     WG.fold_edges (fun (v_1, edge, v_2) (add_summaries, reset_summaries, to_align) ->
       if not (M.mem (v_1, v_2) call_edges) then 
       let formula = P.eval ~algebra edge |> transition_to_formula in 
+      _print_formula formula; print_string (" belongs to "^IntPair.show (v_1, v_2));
       let aff = A.vanishing_space srk formula (Array.of_list (addition_basis)) in
       let res = A.vanishing_space srk formula (Array.of_list (reset_basis)) in
       let ali_aff, ali_res = List.map cut_first_term aff, List.map cut_first_term res in
@@ -213,7 +214,7 @@ module CfgSummarizer
   (* Recursive case model of a program. Creates dummy entry and exit nodes and delta variables for each global variable. 
   Each call edge is replaced by two edges, one going to the next node and one going directly to the exit. In either case, 
   the edge is weighted by a formula decrementing each delta variable by its associated global.  *)
-  let rec_case_model connected_component = 
+  let rec_case_model connected_component with_noop = 
     let symbol_pairs = (T.symbol_pair (Var.fresh "symbolic_one")) :: symbol_pairs in 
     let delta_vars = List.map (fun call -> 
       List.mapi (fun i _ ->
@@ -234,8 +235,10 @@ module CfgSummarizer
       |> List.flatten |> and1 in
       let setting_transition = formula_to_transition setting_formula (List.flatten delta_vars) in
       let detracting_transition call = 
+        print_string "\ndetracting!!!"; print_string (IntPair.show call);
         let detracting_formula = List.map2 (fun (delta, delta_p) (pre, _) ->
-          eq (const delta_p) (add [const delta; neg (const pre)])
+          or1 ([eq (const delta_p) (add [const delta; neg (const pre)])] 
+            @ (if with_noop then [eq (const delta_p) (const delta)] else []))
           ) (M.find call call_to_delta) symbol_pairs |> and1 in 
         formula_to_transition detracting_formula (M.find call call_to_delta)
       in
@@ -248,9 +251,10 @@ module CfgSummarizer
       let graph = WG.add_vertex graph dummy_exit in 
       let graph = WG.add_edge graph dummy_entry (P.mk_edge (G.context rg) dummy_entry en) en in 
       let summaries = M.add (dummy_entry, en) setting_transition summaries in 
-
+      print_string "\n rec case : ";M.iter (fun call _ -> print_string (IntPair.show call)) call_edges; print_string "\n";
       let (graph, summaries) = G.fold_reachable_edges (fun v1 v2 (graph, summaries) ->
         if (M.mem (v1, v2) call_edges) then (
+          print_string (IntPair.show (v1, v2));
           let transition = detracting_transition (M.find (v1, v2) call_edges) in 
           let summaries = M.add (v1, v2) transition summaries in 
           let summaries = M.add (v1, dummy_exit) transition summaries in 
@@ -260,11 +264,10 @@ module CfgSummarizer
         ) path_graph en (graph, summaries) in 
       (graph, summaries, dummies, i+1)
       ) (path_graph, M.empty, M.empty, 0) connected_component in 
-      (graph, summaries, dummies, List.flatten delta_vars)
+      (graph, summaries, dummies, delta_vars)
   
-  let recursive_case call = 
-    let component = G.scc call rg in 
-    let rec_model, summaries, dummies, deltas = rec_case_model component in 
+  let recursive_case component with_noop = 
+    let rec_model, summaries, dummies, deltas = rec_case_model component with_noop in 
     let modified_algebra x = 
       match x with 
       | `Edge e -> if M.mem e summaries 
@@ -272,29 +275,105 @@ module CfgSummarizer
         else algebra x
       | _ -> algebra x 
     in
-    let (en, ex) = M.find call dummies in 
-    let path = WG.path_weight rec_model en ex in 
-    let path_formula = P.eval ~algebra:modified_algebra path |> transition_to_formula in 
-    and1 [path_formula; eq (const (fst (List.hd deltas))) one], deltas
+    List.map2 (fun call delta_call -> 
+      let (en, ex) = M.find call dummies in 
+      let path = WG.path_weight rec_model en ex in 
+      let path_formula = P.eval ~algebra:modified_algebra path |> transition_to_formula in 
+      and1 [path_formula; eq (const (fst (List.hd delta_call))) one]) component deltas, deltas
 
   (* Generates upper bounds for calls. Returns a guard and a set of limits. The way to apply the bound is 
   (guard /\ for all lim in lims #(call) <= lim) \/ #(call) <= 1 *)
-  let generate_upper_bound call = 
-    let r, deltas = recursive_case call in 
-    let symbolic_one = fst (List.hd deltas) in
-    let symbols_with_one = ((symbolic_one, symbolic_one) :: symbol_pairs) in 
+  let generate_upper_bounds call = 
+    let component = call :: ((G.scc call rg) |> List.filter (fun e -> not (e = call))) in 
+    let r, deltas = recursive_case component true in 
+    let all_deltas = List.flatten deltas in 
+    let delta_hulls = List.map (fun formula -> 
+        let poly, csd = Abstract.convex_hull srk formula (List.map snd all_deltas) in 
+        csd, poly
+      ) r in 
+    let common_hulls = List.map (fun i ->
+      let current_call_hull = (List.nth delta_hulls i |> snd 
+      |> Polyhedron.constrained_dual_cone (List.length all_deltas) ) 1 in 
+      let other_hulls = List.filteri (fun j _ -> not (j = i)) delta_hulls
+      |> List.map (fun (_, hull) -> Polyhedron.constrained_dual_cone (List.length all_deltas) hull 0) in 
+      List.fold_left Polyhedron.meet current_call_hull other_hulls
+      ) (List.init (List.length delta_hulls) (fun v -> v)) in 
+    let deltas_per_call = List.length (List.hd deltas) in 
+    let dot_symbols v = V.fold (fun dim v acc ->
+      (if dim >= deltas_per_call then zero else 
+        if dim = 0 then one else mul [real v; const (fst (List.nth symbol_pairs (dim - 1)))]) :: acc
+      ) v [] |> add in 
+    let bounds = List.map (fun hull ->
+      let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
+        match typ with 
+        | `Vertex -> guard, dot_symbols v :: lims
+        | `Ray -> leq zero (dot_symbols v) :: guard, lims
+        | `Line -> eq zero (dot_symbols v) :: guard, lims
+        ) ([], []) (Polyhedron.enum_generators (List.length all_deltas) hull)
+      in
+      and1 guard, lims
+      ) common_hulls in 
+    List.combine component bounds 
+
+  let generate_lower_bounds call = 
+    let component = call :: ((G.scc call rg) |> List.filter (fun e -> not (e = call))) in 
+    (* print_string "\n component "; List.iter (fun e -> print_string (IntPair.show e)) component;  *)
+    let r, deltas = recursive_case component false in 
+    let b = List.map (fun call -> base_case call) component in 
+    let all_deltas = List.flatten deltas in 
+    let delta_hulls = List.map (fun formula -> 
+      let poly, csd = Abstract.convex_hull srk formula (List.map snd all_deltas) in 
+      csd, poly
+    ) r in 
+    let csd, _poly = List.hd delta_hulls in 
+    _print_formula (Polyhedron.to_formula csd _poly);
+    let deltas_per_call = List.length (List.hd deltas) in 
+    let input_hulls = List.mapi (fun i formula -> 
+        let fresh = mk_symbol srk `TyReal in 
+        let pad = List.fold_left (fun acc _ -> fresh :: acc) [] (List.init deltas_per_call (fun v -> v)) in 
+        let left_pad = List.fold_left (fun acc _ -> pad @ acc) [] (List.init i (fun v -> v)) in 
+        let right_pad = List.fold_left (fun acc _ -> pad @ acc) [] (List.init ((List.length component) - i - 1) (fun v -> v)) in 
+        Abstract.convex_hull srk formula (left_pad @ (fresh :: (List.map fst symbol_pairs)) @ right_pad)
+        |> fst 
+      ) b in 
+    (* _print_formula (Polyhedron.to_formula csd i); *)
+    let common_hulls = List.map (fun i -> 
+      let current_call_hull = (List.nth delta_hulls i 
+      |> snd |> Polyhedron.constrained_dual_cone (List.length all_deltas)) (-1)
+      in 
+      let other_hulls = ((List.filteri (fun j _ -> not (j = i)) delta_hulls |> List.map snd) @ input_hulls)
+        |> List.map (fun hull -> Polyhedron.constrained_dual_cone (List.length all_deltas) hull 0) in
+      List.fold_left Polyhedron.meet current_call_hull other_hulls
+      ) (List.init (List.length delta_hulls) (fun v -> v)) in 
+    (* _print_formula (Polyhedron.to_formula csd c); *)
+    let dot_symbols v = V.fold (fun dim v acc -> 
+      (if dim >= deltas_per_call then zero else 
+        if dim = 0 then one else mul [neg one; real v; const (fst (List.nth symbol_pairs (dim - 1)))]) :: acc
+      ) v [] |> add in 
+    let bounds = List.map (fun hull -> 
+        let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
+          match typ with 
+          | `Vertex -> print_string "\nvertex"; print_string (SrkUtil.mk_show V.pp v); guard, (dot_symbols v) :: lims
+          | `Ray -> print_string "\nray"; print_string (SrkUtil.mk_show V.pp v); leq zero (dot_symbols v) :: guard, lims
+          | `Line -> print_string "\nline"; print_string (SrkUtil.mk_show V.pp v); eq zero (dot_symbols v) :: guard, lims
+        ) ([], []) (Polyhedron.enum_generators (List.length all_deltas) hull) in 
+      and1 guard, lims
+      ) common_hulls in 
+    List.combine component bounds
+    (* let symbolic_one = fst (List.hd deltas) in 
+    let symbols_with_one = ((symbolic_one, symbolic_one) :: symbol_pairs) in
     let delta_hull, csd = Abstract.convex_hull srk r (List.map snd deltas) in 
-    let prime_hull, _ = Abstract.convex_hull srk r (List.map snd symbols_with_one) in 
-    let common_hull, _ = Abstract.convex_hull srk (or1 [Polyhedron.to_formula csd delta_hull; Polyhedron.to_formula csd prime_hull]) (List.map snd deltas) in 
-    let ub_hull = Polyhedron.constrained_dual_cone (List.length deltas) common_hull 1 false in 
-    let dot_symbols v = V.fold (fun dim v acc -> mul [real v; const (fst (List.nth symbols_with_one dim))] :: acc) v [] |> add in 
+    let input_hull, _ = Abstract.convex_hull srk (and1 [b; eq (const symbolic_one) one]) (List.map fst symbols_with_one) in 
+    let common_hull, _ = Abstract.convex_hull srk (or1 [Polyhedron.to_formula csd delta_hull; Polyhedron.to_formula csd input_hull]) (List.map snd deltas) in 
+    let lb_hull = Polyhedron.constrained_dual_cone (List.length deltas) common_hull (-1) in 
+    let dot_symbols v = V.fold (fun dim v acc -> mul [neg one; real v; const (fst (List.nth symbols_with_one dim))] :: acc) v [] |> add in 
     let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
       match typ with 
       | `Vertex -> guard, dot_symbols v :: lims 
-      | `Ray -> leq zero (dot_symbols v) :: guard, lims
+      | `Ray -> leq (dot_symbols v) zero :: guard, lims
       | `Line -> eq zero (dot_symbols v) :: guard, lims
-      ) ([], []) (Polyhedron.enum_generators (List.length deltas) ub_hull) in
-    and1 ((eq (const symbolic_one) one) :: guard), lims
+      ) ([], []) (Polyhedron.enum_generators (List.length deltas) lb_hull) in
+    and1 ((eq (const symbolic_one) one) :: guard), lims *)
 
 (* ===================== INTERVAL GRAMMAR ===================== *)
 (* Generates a CFG model for the graph inputted to the module *)
@@ -357,7 +436,9 @@ module CfgSummarizer
       let no_resets_after_perm = List.map (fun edge ->
         List.map (fun index ->
           if1 (lt permutation_symbol (mk_int srk index))
-            (eq zero (edge_to_terminal (get_ith index edge)))
+            (and1 [eq zero (edge_to_terminal (get_ith index edge));
+              if index < List.length coherence_classes then eq zero (edge_to_terminal (get_ith (ind index index) edge)) else mk_true srk
+          ])
           ) (List.init (List.length coherence_classes + 1) (fun v -> v))
         ) reset_edges |> List.concat in 
       valid_permutation @ perm_must_reset @ no_resets_after_perm
@@ -376,8 +457,8 @@ module CfgSummarizer
       ) rectified_summaries in 
 
     let all_adds_after i = 
-      let words_after_i = List.init (num_classes - index) (fun v -> v + index + 1) in 
-      let marked_after_i = List.init (num_classes - i - 1) (fun v -> v + index + 1) in 
+      let words_after_i = List.init (num_classes - i) (fun v -> v + i + 1) in 
+      let marked_after_i = List.init (num_classes - i - 1) (fun v -> v + i + 1) in
       M.fold (fun edge _ ls ->
         let offset = M.find edge offsets in 
         let words_sum = List.fold_left (fun acc word_num ->
@@ -403,7 +484,7 @@ module CfgSummarizer
       let x' = add post_terms in 
       let cl = List.filter (List.mem index) coherence_classes |> List.hd in 
       let permutation_symbol = (class_to_symbol cl) in 
-      if M.is_empty reset_edges then eq x' (add [x; all_adds_after (-1)]) else
+      let form = if M.is_empty reset_edges then eq x' (add [x; all_adds_after (-1)]) else
       List.map (fun last_reset ->
         let is_eq = eq permutation_symbol (mk_int srk last_reset) in 
         let reset_cases = M.fold (fun edge _ acc -> 
@@ -414,10 +495,10 @@ module CfgSummarizer
           let all_edges_zero = M.fold (fun edge _ acc -> 
             eq (edge_to_terminal (get_ith (ind last_reset last_reset) edge)) (zero) :: acc
             ) reset_edges [] |> and1 in
-          let unreset_case = and1 [all_edges_zero; eq x' (add [x; all_adds_after last_reset])] in  
+          let unreset_case = and1 [all_edges_zero; eq x' (add [x; all_adds_after (-1)])] in  
           if1 is_eq (or1 (unreset_case :: reset_cases))
         ) (List.init num_classes (fun v -> v))
-      |> and1
+      |> and1 in form
 
   let summary_dicts = generate_vas_transforms ()
   let original_cfg = gen_cfg G.src
@@ -426,7 +507,6 @@ module CfgSummarizer
     let cfg = CFG.set_start original_cfg call |> CFG.prune in
     let reachable = CFG.terminals cfg in 
     if List.length reachable = 0 then (algebra `One) else  
-
     let rectified_summaries = get_rectified_summaries reachable summary_dicts in 
     let coherence_classes = get_coherence_classes rectified_summaries in 
     let num_classes = List.length coherence_classes in 
@@ -435,7 +515,13 @@ module CfgSummarizer
     let edge_to_ind = Memo.memo (fun (_: IntPair.t) -> incr ctr; !ctr) in 
     let get_ith = (fun (i:int) e -> (i, edge_to_ind e)) in     
 
-    let _, _ = generate_upper_bound call in 
+    print_string (SrkUtil.mk_show (CFG.pp) cfg);
+    M.iter (fun edge ls ->
+      print_string ("\n Summary of "^IntPair.show edge); 
+      List.iter (fun (vec, reset) -> print_string (SrkUtil.mk_show V.pp vec); print_string " is reset? "; print_int reset;) ls;
+      
+      ) rectified_summaries;
+    print_string ("\n\n"^(IntPair.show call));
     let class_to_symbol = Memo.memo (fun cl -> mk_symbol srk ~name:("perm"^(string_of_int (List.hd cl))) `TyInt |> const) in 
 
     let int_cfg = CFG.weak_labeled cfg get_ith get_ith ind num_classes in 
@@ -443,8 +529,41 @@ module CfgSummarizer
     
     let edge_to_terminal_dict = List.fold_left (fun dict edge -> M.add edge (mk_symbol srk ~name:("T"^IntPair.show edge) `TyInt) dict) M.empty (CFG.terminals int_cfg) in 
     let edge_to_terminal e = match M.find_opt e edge_to_terminal_dict with | Some v -> const v | None -> zero in 
+    let call_to_nonterminal_dict = List.fold_left (fun dict edge -> M.add edge (mk_symbol srk ~name:("N"^IntPair.show edge) `TyInt) dict) M.empty (CFG.nonterminals int_cfg) in 
+    let call_to_nonterminal e = match M.find_opt e call_to_nonterminal_dict with | Some v -> const v | None -> zero in 
+    (* _print_formula (CFG.parikh srk cfg edge_to_terminal call_to_nonterminal); *)
 
-    let parikh = CFG.parikh srk int_cfg edge_to_terminal in 
+    let call_count call = (
+    (* partial words *)
+    List.fold_left (fun acc it -> 
+      call_to_nonterminal (get_ith it call) :: 
+      neg (edge_to_terminal (get_ith it call)) :: acc) [] (List.init (num_classes+1) (fun v -> v))
+    (* marked symbols *)
+    @ List.fold_left (fun acc i -> 
+      List.fold_left (fun acc j -> call_to_nonterminal (get_ith (ind i j) call) :: 
+      neg (edge_to_terminal (get_ith (ind i j) call)) :: acc) acc (List.init (num_classes - i) (fun v -> i + v))) 
+      [] (List.init num_classes (fun v -> v)) 
+    ) |> add in 
+
+    let call_and_ubs = generate_upper_bounds call in 
+    let call_and_lbs = generate_lower_bounds call in 
+    let upper_bound = List.map (fun (call, (guard, lims)) -> 
+        print_string "\ncall: "; print_string (IntPair.show call);
+        _print_formula guard; print_string "lims"; List.iter (fun e -> _print_formula e) lims;
+        let cc = call_count call in 
+        or1 [and1 (guard :: List.map (fun lim -> leq cc lim) lims); leq cc zero]
+      ) call_and_ubs |> and1 in 
+    let lower_bound = List.map (fun (call, (guard, lims)) ->
+      let cc = call_count call in 
+      and1 (guard :: List.map (fun lim -> leq lim cc) lims)
+      ) call_and_lbs |> and1 in 
+    print_string "CHECK THIS OUT"; _print_formula lower_bound;
+
+    (* let lower_bound = and1 (lb_guard :: List.fold_left (fun acc lim -> leq lim call_count :: acc) [] lb_lims) in  *)
+    
+    List.iter (fun cl -> print_string "\n class: "; List.iter (fun num -> print_string " "; print_int num) cl) coherence_classes;
+
+    let parikh = CFG.parikh srk int_cfg edge_to_terminal call_to_nonterminal in 
     let strong_label_constraints = get_strong_labeling_constraints 
       reachable coherence_classes class_to_symbol edge_to_terminal rectified_summaries get_ith ind in 
     let transform = M.find (List.hd reachable) rectified_summaries 
@@ -452,7 +571,54 @@ module CfgSummarizer
       |> BatEnum.fold (fun ls (index, row) -> 
         (row_to_formula index row rectified_summaries edge_to_terminal get_ith ind coherence_classes class_to_symbol) :: ls) []
       |> and1 in 
-      formula_to_transition (and1 [parikh; strong_label_constraints; transform]) (symbol_pairs)
+      (* _print_formula parikh; *)
+      (* _print_formula strong_label_constraints; *)
+      _print_formula transform;
+      print_string "upperbound"; _print_formula upper_bound;
+      (* _print_formula lower_bound; *)
+      (* print_string "\n\n\n\n\n"; print_string (SrkUtil.mk_show (CFG.pp) cfg);
+      print_string "\n\n\n\n\n"; print_string (SrkUtil.mk_show (CFG.pp) int_cfg); *)
+      print_int num_classes;
+      (* _print_formula (and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]); *)
+      List.iter (fun edge -> print_string ("\n"^IntPair.show edge)) reachable;
+      print_string (IntPair.show call);
+      (* let pre = List.fold_left (fun acc sym -> const (fst sym) :: acc) [] symbol_pairs |> and1 in  *)
+      (* let ret, param = snd (List.nth symbol_pairs 0), fst (List.nth symbol_pairs 1) in 
+      let pre = eq (const param) (add [one; one; one]) in 
+      _print_formula pre;
+      let formula = and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound] in
+      (* _print_formula lower_bound;
+      _print_formula (call_count call);
+      _print_formula parikh; *)
+      let post = eq (const ret) (add [zero]) in 
+      let model = Smt.get_model srk (and1 [pre; formula; post]) in 
+      _print_formula pre; _print_formula post;
+
+      let _call_count call = (
+    (* partial words *)
+    List.fold_left (fun acc it -> 
+      call_to_nonterminal (get_ith it call) :: 
+      neg (edge_to_terminal (get_ith it call)) :: acc) [] (List.init (num_classes+1) (fun v -> v))
+    (* marked symbols *)
+    @ List.fold_left (fun acc i -> 
+      List.fold_left (fun acc j -> call_to_nonterminal (get_ith (ind i j) call) :: 
+      neg (edge_to_terminal (get_ith (ind i j) call)) :: acc) acc (List.init (num_classes - i) (fun v -> i + v))) 
+      [] (List.init num_classes (fun v -> v)) 
+      ) in 
+
+
+      (match model with 
+      | `Sat i -> 
+          print_string "\n\n TERMINALS: \n\n"; 
+          M.iter (fun edge sym -> print_string ("\nEdge "^IntPair.show edge); print_string " Value: "; print_string (SrkUtil.mk_show Mpqf.print (Interpretation.evaluate_term i (const sym)))) edge_to_terminal_dict;
+
+          print_string "\n\n NONTERMINALS: \n\n";
+          M.iter (fun edge sym -> print_string ("\nCall "^IntPair.show edge); print_string " formula "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (const sym)); print_string " Value: "; print_string (SrkUtil.mk_show Mpqf.print (Interpretation.evaluate_term i (const sym)))) call_to_nonterminal_dict;
+
+          print_string "\n param0? "; print_string (SrkUtil.mk_show Mpqf.print (Interpretation.evaluate_term i (const param)));
+      | `Unsat -> print_string "\n\nUNSAT???"
+      | _ -> ()); *)
+      formula_to_transition (and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]) (symbol_pairs)
 
 
 
