@@ -1,3 +1,4 @@
+#include "assert.h"
 
 int a;
 int b;

@@ -1,3 +1,5 @@
+#include "assert.h"
+
 struct node {
     int value;
     struct node *left;

@@ -1,9 +1,10 @@
+#include "assert.h"
 
 int a(int x) {
     if (x <= 0) {
         return 0;
     } else {
-        return 1 + b(x - 1);
+        return 1 + b(x - 1); 
     }
 }
 
@@ -16,7 +17,7 @@ int b (int x) {
 }
 
 int main() {
-    int input = 3;
+    int input = __VERIFIER_nondet_int();
     int result = a(input);
-    __VERIFIER_assert(result <= 6);
+    __VERIFIER_assert((input < 0 && result == 0) || (result == input));
 }

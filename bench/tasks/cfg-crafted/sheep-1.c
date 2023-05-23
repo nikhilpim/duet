@@ -1,3 +1,4 @@
+#include "assert.h"
 
 // A sheep is walking across a bridge. 
 // The bridge is represented by an array of 1's and 0's - 1's represent the safe spots in the bridge.

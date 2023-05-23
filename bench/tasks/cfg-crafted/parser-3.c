@@ -25,6 +25,6 @@ int main() {
         int slen = __VERIFIER_nondet_int();
         __VERIFIER_assume(slen > 0);
         lexer(0, slen);
-        __VERIFIER_assert(end == slen);
+        __VERIFIER_assert(slen == (end - start) + processed);
         return 0;
 }

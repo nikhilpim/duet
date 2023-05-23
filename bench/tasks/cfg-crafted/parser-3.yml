@@ -1,6 +1,6 @@
 format_version: '1.0'
 
-input_files: 'id-2.c'
+input_files: 'parser-3.c'
 
 properties:
   - property_file: ../properties/unreach-call.prp

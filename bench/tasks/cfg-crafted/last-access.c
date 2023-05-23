@@ -1,3 +1,5 @@
+#include "assert.h"
+
 int last_access;
 
 void random_sample(int x) {
@@ -14,8 +16,14 @@ void random_sample(int x) {
     }
 }
 
-
 int main() {
     random_sample(0);
     __VERIFIER_assert(last_access % 4 == 0);
 }
+
+
+
+
+
+
+

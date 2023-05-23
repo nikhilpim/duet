@@ -1,9 +1,10 @@
+#include "assert.h"
 
 int a(int x) {
     if (x <= 0) {
         return 0;
     } else {
-        return 1 + b(x - 1); // Unclear if x/2 is even a valid potential, so maybe the implementation isn't even wrong
+        return 1 + b(x - 1); 
     }
 }
 

@@ -1,29 +1,30 @@
+#include "assert.h"
+
 int end;
 int start;
+int processed;
 char EOF;
 
-void container1() {
-    end += 1;
-    start = end;
-}
-void container2() {
-    end += 1;
-}
 char lexer(char* s, int slen) {
     if (slen <= 0) {return EOF;}
     char c = s[0];
     if (c == '\0') {
-        container1();
+        end = end + 1;
+        processed = processed + (end - start);
+        start = end;
     } else {
-        container2();
+        end = end + 1;
     }
     lexer(s + 1, slen - 1);
 }
 
 int main() {
-        start = __VERIFIER_nondet_int();
-        end = start;
-        lexer(0, __VERIFIER_nondet_int());
+        start = 0;
+        end = 0;
+        processed = 0;
+        int slen = __VERIFIER_nondet_int();
+        __VERIFIER_assume(slen > 0);
+        lexer(0, slen);
         __VERIFIER_assert(start <= end);
         return 0;
 }
