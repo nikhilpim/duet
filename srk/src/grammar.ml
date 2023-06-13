@@ -198,19 +198,6 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
         mk_if context (mk_lt context zero (nmapping nt)) if_dist 
     in
 
-    let dist_helper2 nt = 
-      if nt = grammar.start then mk_eq context (NMap.find nt dmapping) zero else  
-      let zero_cond = mk_and context [mk_eq context (nmapping nt) zero; 
-        mk_eq context (NMap.find nt dmapping) (mk_neg context (mk_one context))] in
-        let possible_preds = List.filter (fun pred ->
-          List.exists (fun (from, word) -> from = pred && List.mem (N nt) word) ps
-        ) nts in 
-        let has_pred = List.map (fun pred -> mk_eq context (NMap.find nt dmapping) (NMap.find pred dmapping)) possible_preds 
-        |> mk_or context in 
-        let geq_cond = mk_and context [mk_lt context zero (nmapping nt); 
-          has_pred; mk_lt context zero (NMap.find nt dmapping)] in 
-        mk_or context [zero_cond; geq_cond]
-      in
     let all_symbols = (List.map (fun t -> T t) ts) @ (List.map (fun n -> N n) nts) in 
 
     let outgoing = mk_and context (List.map outgoing_sum_helper nts) in
@@ -220,12 +207,9 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     @ *)List.map (fun p -> mk_leq context (mk_zero context) (PMap.find p pmapping)) ps
     |> mk_and context in
     let dist = mk_and context (List.map dist_helper nts) in 
-    let dist2 = mk_and context (List.map dist_helper2 nts) in
-    let dist = if (Syntax.size dist < Syntax.size dist2) then dist else dist2 in 
     print_int (Syntax.size outgoing); print_string " ";
     print_int (Syntax.size incoming);print_string " ";
     print_int (Syntax.size dist);print_string " ";
-    print_int (Syntax.size dist2);print_string " ";
     print_int (Syntax.size nonneg);print_string " ";
     mk_and context [outgoing; incoming; dist; nonneg]
     
