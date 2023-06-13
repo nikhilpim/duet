@@ -238,6 +238,20 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let all_prods = (List.map (fun nt -> (get_ith_nt (-1) nt), [N (get_ith_nt n nt)]) (NSet.elements grammar.nonterminals)) @ all_prods in  
     List.fold_left (fun cfg (nt, out) -> add_production cfg nt out) (empty (get_ith_nt (-1) grammar.start)) all_prods
 
+  
+  let duplicate_terminals grammar (dups: terminal -> terminal list) = 
+    PSet.fold (fun (l, r) grammar ->
+      let new_rs = List.fold_right (fun c acc -> 
+        match c with 
+        | N n -> List.map (fun ls -> N n :: ls) acc
+        | T t -> List.fold_left (fun nacc d -> 
+                nacc @ List.map (fun ls -> T d :: ls) acc 
+              ) [] (dups t)
+        ) r [[]] in 
+      List.fold_left (fun grammar newr ->
+        add_production grammar l newr) grammar new_rs 
+      ) grammar.productions grammar
+
   let pp (fmt : Format.formatter) (grammar: t) = 
     SrkUtil.pp_print_list (fun fmt prod ->
       Format.fprintf fmt "@[%s @]@." (pname prod) 

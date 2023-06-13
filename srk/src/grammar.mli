@@ -21,5 +21,6 @@ module MakeCFG (N : Symbol) (T : Symbol) : (sig
   val prune: t -> t
   val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> (nonterminal -> 'a Syntax.arith_term) -> 'a Syntax.formula 
   val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> int -> t
+  val duplicate_terminals: t -> (terminal -> terminal list) -> t
   val pp: Format.formatter -> t -> unit
   end)

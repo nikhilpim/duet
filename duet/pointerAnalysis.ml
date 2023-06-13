@@ -326,9 +326,9 @@ let simplify_calls file =
       (fun i -> mk_thread_local_var
           file
           ("param" ^ (string_of_int i))
-          (Concrete Dynamic))
+          (Concrete (Int 32)))
   in
-  let return_var = mk_thread_local_var file "return" (Concrete Dynamic) in
+  let return_var = mk_thread_local_var file "return" (Concrete (Int 32)) in
   let simplify_func func =
     let cfg = func.cfg in
     let defs = Cfg.fold_vertex (fun v vs -> v::vs) cfg [] in
