@@ -26,9 +26,8 @@ int main() {
         end = array_start;
         processed = 0;
         int slen = __VERIFIER_nondet_int();
-        __VERIFIER_assume(slen > 0);
         lexer(slen);
-        if (!(start <= end && end - array_start == slen)) {
+        if (!(slen <= 0 || (start <= end && end - array_start == slen))) {
             ERROR: {reach_error();abort();}
 
         }

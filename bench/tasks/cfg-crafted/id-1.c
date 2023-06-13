@@ -19,7 +19,4 @@ int main() {
         (result == number ))) {
             ERROR: {reach_error();abort();}
         }
-    // __VERIFIER_assert(
-    //     (number < 0 && result == 0) || 
-    //     (result == number ));
 }

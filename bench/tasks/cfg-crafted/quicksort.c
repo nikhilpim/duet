@@ -24,8 +24,9 @@ void quicksort (int* arr, int left, int right) {
 int main() {
     call_count = 0;
     int size = __VERIFIER_nondet_int(); 
-    __VERIFIER_assume (1 <= size);
     quicksort(__VERIFIER_nondet_int(), 0, size);
-    __VERIFIER_assert(call_count <= 2 * 
-        size + 2 );
+    if (!(size < 1 || (call_count <= 2 * 
+        size + 2 ))) {
+        ERROR: {reach_error();abort();}
+    }
 }

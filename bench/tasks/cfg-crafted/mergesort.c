@@ -1,3 +1,7 @@
+extern int __VERIFIER_nondet_int();
+extern int __VERIFIER_nondet_array();
+extern void abort(void); 
+void reach_error(){}
 
 int call_count;
 
@@ -23,8 +27,8 @@ void mergesort (int width) {
 int main() {
     call_count = 0;
     int array_size = __VERIFIER_nondet_int(); 
-    __VERIFIER_assume(array_size >= 0);
-
     mergesort(array_size);
-    __VERIFIER_assert(call_count <= 2 * array_size + 1);
+    if (!(array_size < 0 || (call_count <= 2 * array_size + 1))) {
+        ERROR: {reach_error();abort();}
+    }
 }
