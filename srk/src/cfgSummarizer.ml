@@ -85,7 +85,8 @@ module CfgSummarizer
   let zero = mk_zero srk
   let one = mk_one srk
 
-  let _print_formula form = print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
+  let _print_formula _form = ()
+    (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form) *)
   let _print_matrix mat = print_string (SrkUtil.mk_show (Q.pp) mat)
   let cut_first_term v = BatEnum.filter_map ((fun (e, d) -> if (d >= 1) then Some (e, d-1) else None)) 
     (V.enum v) |> V.of_enum 
@@ -722,12 +723,15 @@ module CfgSummarizer
     let call_to_nonterminal_dict = List.fold_left (fun dict edge -> M.add edge (mk_symbol srk ~name:("N"^IntPair.show edge) `TyInt) dict) M.empty (CFG.nonterminals int_cfg) in 
     let call_to_nonterminal e = match M.find_opt e call_to_nonterminal_dict with | Some v -> const v | None -> zero in 
 
-    let call_count call = ((if call = original_call then neg one else zero) :: List.fold_left (fun acc it -> 
-      call_to_nonterminal (get_ith it call) :: acc) [] (List.init (num_classes+1) (fun v -> v))
+    let all_nts call = List.fold_left (fun acc it -> 
+      (get_ith it call) :: acc) [] (List.init (num_classes+1) (fun v -> v))
     @ List.fold_left (fun acc i -> 
       List.fold_left (fun acc j -> 
-        call_to_nonterminal (get_ith (ind i j) call) ::  acc) acc (List.init (num_classes - i) (fun v -> i + v))) 
-      [] (List.init num_classes (fun v -> v)) 
+        (get_ith (ind i j) call) ::  acc) acc (List.init (num_classes - i) (fun v -> i + v))) 
+      [] (List.init num_classes (fun v -> v)) in 
+      
+    let call_count call = ((if call = original_call then neg one else zero) 
+      :: List.map call_to_nonterminal (all_nts call)  
     ) |> add in 
 
     let call_and_ubs = generate_upper_bounds path_graph original_call in 
@@ -741,8 +745,9 @@ module CfgSummarizer
       let cc = call_count call in 
       and1 (guard :: List.map (fun lim -> leq lim cc) lims)
       ) call_and_lbs |> and1 in 
-
-    let parikh = CFG.parikh srk int_cfg edge_to_terminal call_to_nonterminal in 
+    
+    let calls = List.fold_left (fun acc (call, _) -> (all_nts call) @ acc) [] call_and_ubs in 
+    let parikh = CFG.parikh srk (CFG.compress int_cfg (calls) ) edge_to_terminal call_to_nonterminal in 
     let strong_label_constraints = get_strong_labeling_constraints 
       reachable coherence_classes class_to_symbol edge_to_terminal rectified_summaries get_ith ind in 
     let transform = M.find (List.hd reachable) rectified_summaries 

@@ -55,6 +55,11 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let (nt, out) = p in
     "P " ^ (nname nt) ^ " -> " ^ (List.fold_left (fun str sym -> str ^ " " ^ (match sym with | T t -> (tname t) | N n -> (nname n))) "" out)
 
+    let pp (fmt : Format.formatter) (grammar: t) = 
+      SrkUtil.pp_print_list (fun fmt prod ->
+        Format.fprintf fmt "@[%s @]@." (pname prod) 
+        ) fmt (PSet.to_list grammar.productions)
+
   (* Eliminates all useless symbols from grammar. L(prune(G)) = L(G) *)
   let prune grammar = 
     (* A nonterminal is generating if it derives some terminal string *)
@@ -117,28 +122,26 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     gen_map productions consts m
   
   (* Removes rendundant productions. *)
-  let compress grammar = 
+  let compress grammar reserved = 
     let ps = NSet.fold (fun nt ps ->
       let headed_ps = PSet.filter (fun (h, _) -> h = nt) ps in
-      if (PSet.cardinal headed_ps) = 1 
+      if (((PSet.cardinal headed_ps)) = 1) && not (List.mem nt (grammar.start :: reserved))
       then 
         let (_, replacement) = PSet.max_elt headed_ps in 
         PSet.filter_map (fun p ->
         match p with 
         | (h, _) when h = nt -> None
         | (h, w) -> Some (h, List.fold_right (fun c acc ->
-          if c = N nt then replacement @ acc else c :: acc
-          ) w [])
+          if c = N nt then replacement @ acc else c :: acc 
+          ) w []) 
         ) ps
       else ps
       ) grammar.nonterminals grammar.productions in 
-    PSet.fold (fun (h, w) g -> add_production g h w) ps (empty grammar.start)
-
-
+    PSet.fold (fun (h, w) g -> add_production g h w) ps (empty grammar.start) 
+    
 
   (* Computes the expression describing the parikh image of the curent CFG *)
   let parikh context grammar mapping nmapping = 
-    let grammar = compress grammar in 
     (* Generate flow variables for each nonterminal and terminal, as well as
     a "distance" from the start nonterminal. mapping binds terminals to flow variables. *)
     let nts = NSet.elements grammar.nonterminals in
@@ -283,9 +286,6 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
         add_production grammar l newr) grammar new_rs 
       ) grammar.productions grammar
 
-  let pp (fmt : Format.formatter) (grammar: t) = 
-    SrkUtil.pp_print_list (fun fmt prod ->
-      Format.fprintf fmt "@[%s @]@." (pname prod) 
-      ) fmt (PSet.to_list grammar.productions)
+
 end
 
