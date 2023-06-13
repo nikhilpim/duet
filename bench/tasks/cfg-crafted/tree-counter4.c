@@ -2,25 +2,26 @@ extern int __VERIFIER_nondet_int();
 extern void abort(void); 
 void reach_error(){}
 
-int leafs;
-int internal_nodes;
+int leafs1;
+int leafs2;
 
 void tree_count() {
     if (__VERIFIER_nondet_int()) {
-        leafs += 1;
+        leafs1 += 1;
     } else {
-        internal_nodes += 1;
         tree_count();
-        tree_count();
+        while (__VERIFIER_nondet_int()) {
+            leafs2 += 1;
+            tree_count();
+        }
     }
     return;
 }
 
 int main() {
-    leafs = 0; internal_nodes = 0;
+    leafs1 = 0; leafs2 = 1;
     tree_count();
-    if (!(internal_nodes + 
-        1 == leafs)) {
+    if (!(leafs1 == leafs2)) {
             ERROR: {reach_error();abort();}
         }
     return 0;

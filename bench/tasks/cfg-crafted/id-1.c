@@ -1,4 +1,6 @@
-#include "assert.h"
+extern int __VERIFIER_nondet_int();
+extern void abort(void); 
+void reach_error(){}
 
 int id (int x) {
     if (x <= 0) {
@@ -12,7 +14,12 @@ int id (int x) {
 int main() {
     int number = __VERIFIER_nondet_int(); 
     int result = id(number);
-    __VERIFIER_assert(
+    if (!(
         (number < 0 && result == 0) || 
-        (result == number));
+        (result == number ))) {
+            ERROR: {reach_error();abort();}
+        }
+    // __VERIFIER_assert(
+    //     (number < 0 && result == 0) || 
+    //     (result == number ));
 }

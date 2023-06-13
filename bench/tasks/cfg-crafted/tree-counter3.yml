@@ -1,6 +1,6 @@
 format_version: '1.0'
 
-input_files: 'parser-3.c'
+input_files: 'tree-counter3.c'
 
 properties:
   - property_file: ../properties/unreach-call.prp

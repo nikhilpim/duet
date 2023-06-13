@@ -1,6 +1,6 @@
 format_version: '1.0'
 
-input_files: 'last-access.c'
+input_files: 'tree-lastsave.c'
 
 properties:
   - property_file: ../properties/unreach-call.prp
