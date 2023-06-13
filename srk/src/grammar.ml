@@ -115,9 +115,30 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
       | _, _ -> m
     in
     gen_map productions consts m
+  
+  (* Removes rendundant productions. *)
+  let compress grammar = 
+    let ps = NSet.fold (fun nt ps ->
+      let headed_ps = PSet.filter (fun (h, _) -> h = nt) ps in
+      if (PSet.cardinal headed_ps) = 1 
+      then 
+        let (_, replacement) = PSet.max_elt headed_ps in 
+        PSet.filter_map (fun p ->
+        match p with 
+        | (h, _) when h = nt -> None
+        | (h, w) -> Some (h, List.fold_right (fun c acc ->
+          if c = N nt then replacement @ acc else c :: acc
+          ) w [])
+        ) ps
+      else ps
+      ) grammar.nonterminals grammar.productions in 
+    PSet.fold (fun (h, w) g -> add_production g h w) ps (empty grammar.start)
+
+
 
   (* Computes the expression describing the parikh image of the curent CFG *)
   let parikh context grammar mapping nmapping = 
+    let grammar = compress grammar in 
     (* Generate flow variables for each nonterminal and terminal, as well as
     a "distance" from the start nonterminal. mapping binds terminals to flow variables. *)
     let nts = NSet.elements grammar.nonterminals in
@@ -126,6 +147,8 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
 
     let pmapping = gen_p_symbols context ps in
     let dmapping = gen_nt_symbols context nts "D" in 
+
+    let zero = mk_zero context in 
 
     (* For all nonterminals, f(nt) = /sum_{nt->w} f(nt->w) *)
     let outgoing_sum_helper nt = 
@@ -157,29 +180,53 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     Obviously, d(s) = 0 *)
     let dist_helper nt = 
       (* Condition that a production n-> w is used and d(nt) = d(n) + 1 *)
-      let dist_cond prod = 
-        let (from, _) = prod in 
-        let prod_used = mk_lt context (mk_zero context) (PMap.find prod pmapping) in
-        let dist_constr = mk_eq context (NMap.find nt dmapping) (mk_add context [(NMap.find from dmapping); (mk_int context 1)]) in
+      let dist_cond pred = 
+        let prods = List.filter (fun (from, word) -> from = pred && List.mem (N nt) word) ps 
+        |> List.map (fun p -> PMap.find p pmapping)
+        |> mk_add context in  
+        let prod_used = mk_lt context zero prods in
+        let dist_constr = mk_eq context (NMap.find nt dmapping) (mk_add context [(NMap.find pred dmapping); (mk_int context 1)]) in
         mk_and context [prod_used; dist_constr]
       in
       match nt with 
-      | z when z = grammar.start -> mk_eq context (NMap.find nt dmapping) (mk_zero context)
+      | z when z = grammar.start -> mk_eq context (NMap.find nt dmapping) zero
       | _ -> 
-        let prods = List.filter (fun (_, lst) -> List.mem (N nt) lst) ps in
-        let if_dist = mk_or context (List.map dist_cond prods) in
-        mk_if context (mk_lt context (mk_zero context) (nmapping nt)) if_dist 
+        let possible_preds = List.filter (fun pred ->
+            List.exists (fun (from, word) -> from = pred && List.mem (N nt) word) ps
+          ) nts in 
+        let if_dist = mk_or context (List.map dist_cond possible_preds) in
+        mk_if context (mk_lt context zero (nmapping nt)) if_dist 
     in
 
+    let dist_helper2 nt = 
+      if nt = grammar.start then mk_eq context (NMap.find nt dmapping) zero else  
+      let zero_cond = mk_and context [mk_eq context (nmapping nt) zero; 
+        mk_eq context (NMap.find nt dmapping) (mk_neg context (mk_one context))] in
+        let possible_preds = List.filter (fun pred ->
+          List.exists (fun (from, word) -> from = pred && List.mem (N nt) word) ps
+        ) nts in 
+        let has_pred = List.map (fun pred -> mk_eq context (NMap.find nt dmapping) (NMap.find pred dmapping)) possible_preds 
+        |> mk_or context in 
+        let geq_cond = mk_and context [mk_lt context zero (nmapping nt); 
+          has_pred; mk_lt context zero (NMap.find nt dmapping)] in 
+        mk_or context [zero_cond; geq_cond]
+      in
     let all_symbols = (List.map (fun t -> T t) ts) @ (List.map (fun n -> N n) nts) in 
 
     let outgoing = mk_and context (List.map outgoing_sum_helper nts) in
     let incoming = mk_and context (List.map incoming_sum_helper all_symbols) in
-    let nonneg = List.map (fun t -> mk_leq context (mk_zero context) (mapping t)) ts 
-    @ List.map (fun n -> mk_leq context (mk_zero context) (nmapping n)) nts
-    @ List.map (fun p -> mk_leq context (mk_zero context) (PMap.find p pmapping)) ps
+    let nonneg = (* List.map (fun t -> mk_leq context (mk_zero context) (mapping t)) ts 
+    (* @ List.map (fun n -> mk_leq context (mk_zero context) (nmapping n)) nts *)
+    @ *)List.map (fun p -> mk_leq context (mk_zero context) (PMap.find p pmapping)) ps
     |> mk_and context in
     let dist = mk_and context (List.map dist_helper nts) in 
+    let dist2 = mk_and context (List.map dist_helper2 nts) in
+    let dist = if (Syntax.size dist < Syntax.size dist2) then dist else dist2 in 
+    print_int (Syntax.size outgoing); print_string " ";
+    print_int (Syntax.size incoming);print_string " ";
+    print_int (Syntax.size dist);print_string " ";
+    print_int (Syntax.size dist2);print_string " ";
+    print_int (Syntax.size nonneg);print_string " ";
     mk_and context [outgoing; incoming; dist; nonneg]
     
   let is_weak_labelable grammar = 
