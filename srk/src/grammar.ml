@@ -210,10 +210,6 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     @ *)List.map (fun p -> mk_leq context (mk_zero context) (PMap.find p pmapping)) ps
     |> mk_and context in
     let dist = mk_and context (List.map dist_helper nts) in 
-    print_int (Syntax.size outgoing); print_string " ";
-    print_int (Syntax.size incoming);print_string " ";
-    print_int (Syntax.size dist);print_string " ";
-    print_int (Syntax.size nonneg);print_string " ";
     mk_and context [outgoing; incoming; dist; nonneg]
     
   let is_weak_labelable grammar = 

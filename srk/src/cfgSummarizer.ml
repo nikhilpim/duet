@@ -85,8 +85,8 @@ module CfgSummarizer
   let zero = mk_zero srk
   let one = mk_one srk
 
-  let _print_formula _form = ()
-    (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form) *)
+  let _print_formula form = 
+    print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
   let _print_matrix mat = print_string (SrkUtil.mk_show (Q.pp) mat)
   let cut_first_term v = BatEnum.filter_map ((fun (e, d) -> if (d >= 1) then Some (e, d-1) else None)) 
     (V.enum v) |> V.of_enum 
@@ -189,11 +189,8 @@ module CfgSummarizer
   (* Uses vanishing space algorithm to compute VASR transitions simulating each edge in the graph *)
   let _split_formula f = 
     let v = vasr_extract f in 
-    (* print_string "\n\n formula: "; _print_formula f;
-    print_string "\n vasr: "; _print_formula (vasr_to_formula v); *)
-    [v; v]
+    [v]
   let split_formula f = 
-    print_string "\n\nConsidering new formula: "; _print_formula f;
     let phi = f 
       |> rewrite srk ~down:(nnf_rewriter srk)
       |> Nonlinear.linearize srk
@@ -221,14 +218,11 @@ module CfgSummarizer
               symbol_pairs
             in
           let new_vasr = vasr_extract (and1 (phi::cell)) in
-          (* print_string "\n New VASR: "; _print_formula (vasr_to_formula new_vasr); *)
           Smt.Solver.add solver [not1 (vasr_to_formula new_vasr)];
           go (new_vasr::vasrs)
     in
     Smt.Solver.add solver [phi];
-    let r = go [] in 
-    print_int (List.length r);
-    r
+    go []
     
   let generate_vas_transforms path_graph = 
     let max_vertex = WG.max_vertex path_graph in 
@@ -254,7 +248,6 @@ module CfgSummarizer
     match edges with 
     | [] -> 
       (* Once we are out of edges, add the consistent summaries to rectified_summaries *)
-      (* print_string "\n\n Found Abstraction: "; _print_matrix current_abstraction; *)
       List.fold_left (fun rectified_summaries (is_reset, edge, matrix) ->
         let rows = BatEnum.fold (fun ls (_, r) -> (r, is_reset) :: ls) [] (Q.rowsi matrix) in 
         if M.mem edge rectified_summaries then M.update edge edge (rows @ M.find edge rectified_summaries) rectified_summaries else
@@ -264,11 +257,8 @@ module CfgSummarizer
       (* If there is still an edge, recursively compute summaries that are consistent 
     with the resets of the edge and with the additions of the edge *)
       let (aff, res) = M.find edge vasr_map in
-      (* print_string "\n New VASR:"; _print_formula (vasr_to_formula (aff, res)); 
-      print_string "\nAff and Res: "; _print_matrix aff; _print_matrix res; *)
       let aff_align = Q.of_rows (List.rev (BatEnum.fold (fun acc (_, r) -> cut_first_term r :: acc) [] (Q.rowsi aff))) in 
       let res_align = Q.of_rows (List.rev (BatEnum.fold (fun acc (_, r) -> cut_first_term r :: acc) [] (Q.rowsi res))) in 
-      (* print_string "\nAff and Res Aligined: "; _print_matrix aff_align; _print_matrix res_align; *)
 
 
       let c, d = L.pushout aff_align current_abstraction in 
@@ -430,24 +420,16 @@ module CfgSummarizer
     (* let r, deltas = recursive_case path_graph component true in  *)
     let r, deltas, counter = _rec_case path_graph component true in 
     let all_deltas = List.flatten deltas in 
-    (* List.iter (fun d -> _print_formula (const d)) (List.map snd all_deltas);
-    List.iter (fun (_, s) -> _print_formula (const s)) symbol_pairs; *)
     let polyhedron_basis = (snd counter :: (List.map snd all_deltas)) in 
     let delta_hulls = List.map (fun formula -> 
-        _print_formula formula;
-        List.iter (fun (_, d) -> _print_formula (const d)) all_deltas;
         let poly, csd = Abstract.convex_hull srk formula polyhedron_basis in 
-        print_string "\n\n POLHEDRA: "; _print_formula (Polyhedron.to_formula csd poly); 
         csd, poly
       ) r in 
     let constr_hulls = List.map (fun (csd, poly) ->
         let p = Polyhedron.dual_cone (List.length polyhedron_basis) poly 
         |> Polyhedron.meet (Polyhedron.of_formula csd (eq (const (snd counter)) (neg one)))
     in 
-  print_string "\n\n DUAL POLHEDRA: "; _print_formula (Polyhedron.to_formula csd p); 
-
         p, csd
-
       ) delta_hulls in 
     let deltas_per_call = List.length (List.hd deltas) in 
     let dot_symbols v = V.fold (fun dim v acc ->
@@ -458,49 +440,19 @@ module CfgSummarizer
                   mul [real v; const (fst (List.nth symbol_pairs (dim - 2)))]) :: acc
       ) v [] |> add in 
       let bounds = List.map (fun (hull, _) ->
-        (* print_string "\n\n BOUNDS: "; _print_formula (Polyhedron.to_formula csd hull);  *)
         let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
-          print_string "plz";
           match typ with 
           | `Vertex -> 
-            print_string "\nVertex: "; print_string (SrkUtil.mk_show V.pp v); _print_formula (dot_symbols v); 
             guard, dot_symbols v :: lims
           | `Ray -> 
-            print_string "\nRay: "; _print_formula (dot_symbols v); 
           leq zero (dot_symbols v) :: guard, lims
           | `Line -> 
-            print_string "\nLine: "; _print_formula (dot_symbols v); 
             eq zero (dot_symbols v) :: guard, lims
           ) ([], []) (Polyhedron.enum_generators (List.length polyhedron_basis) hull)
         in
         and1 guard, lims
         ) constr_hulls in 
     List.combine component bounds 
-
-    (* let common_hulls = List.map (fun i ->
-      let current_call_hull = (List.nth delta_hulls i |> snd 
-      |> Polyhedron.constrained_dual_cone (List.length all_deltas) ) 1 in 
-      let other_hulls = List.filteri (fun j _ -> not (j = i)) delta_hulls
-      |> List.map (fun (_, hull) -> Polyhedron.constrained_dual_cone (List.length all_deltas) hull 0) in 
-      List.fold_left Polyhedron.meet current_call_hull other_hulls
-      ) (List.init (List.length delta_hulls) (fun v -> v)) in 
-    
-    let bounds = List.map (fun hull ->
-      let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
-        match typ with 
-        | `Vertex -> 
-          print_string "\nVertex: "; _print_formula (dot_symbols v); 
-          guard, dot_symbols v :: lims
-        | `Ray -> 
-          print_string "\nRay: "; _print_formula (dot_symbols v); 
-        leq zero (dot_symbols v) :: guard, lims
-        | `Line -> 
-          print_string "\nLine: "; _print_formula (dot_symbols v); 
-          eq zero (dot_symbols v) :: guard, lims
-        ) ([], []) (Polyhedron.enum_generators (List.length all_deltas) hull)
-      in
-      and1 guard, lims
-      ) common_hulls in  *)
 
   let generate_lower_bounds path_graph call = 
     let component = call :: ((G.scc call rg) |> List.filter (fun e -> not (e = call))) in 
@@ -536,13 +488,10 @@ module CfgSummarizer
         let guard, lims = BatEnum.fold (fun (guard, lims) (typ, v) ->
           match typ with 
           | `Vertex -> 
-            print_string "\nVertex: "; _print_formula (dot_symbols v); 
             guard, dot_symbols v :: lims
           | `Ray -> 
-            print_string "\nRay: "; _print_formula (dot_symbols v); 
           leq (dot_symbols v) zero :: guard, lims
           | `Line -> 
-            print_string "\nLine: "; _print_formula (dot_symbols v); 
             eq zero (dot_symbols v) :: guard, lims
         ) ([], []) (Polyhedron.enum_generators (List.length all_deltas) hull) in 
       and1 guard, lims
@@ -676,15 +625,11 @@ module CfgSummarizer
 
 
   let summarize path_graph original_call = 
-    List.iter (fun (s, _) -> print_string "\n Symbol: "; _print_formula (const s)) symbol_pairs;
     let cfg = CFG.set_start (gen_cfg path_graph G.src) original_call |> CFG.prune in
     let reachable = CFG.terminals cfg in 
     if List.length reachable = 0 then (algebra `One) else 
     let edge_map, vasr_map = generate_vas_transforms path_graph in 
-    (* M.iter (fun e e_ls -> print_string "\n\n Edge: "; print_string (IntPair.show e); print_string "    maps to     "; List.iter (fun e -> print_string (IntPair.show e)) e_ls) edge_map;  *)
     let reachable = List.fold_left (fun acc e -> acc @ M.find e edge_map) [] reachable in 
-    (* List.iter (fun e ->
-      print_string "\n reachable edge: "; print_string (IntPair.show e)) reachable; *)
     let rectified_summaries = get_rectified_summaries reachable vasr_map in
     let edge_map = M.filter (fun e _ -> List.mem e reachable) edge_map 
       |> M.map (fun e_ls ->
@@ -694,10 +639,8 @@ module CfgSummarizer
       ) in 
     let reachable = M.fold (fun _ edge_ls acc -> edge_ls @ acc) edge_map [] in 
     let rectified_summaries = M.filter (fun e _ -> List.mem e reachable) rectified_summaries in 
-    (* M.iter (fun _ e_ls -> print_int (List.length e_ls)) edge_map; *)
     let coherence_classes = get_coherence_classes rectified_summaries in 
     let num_classes = List.length coherence_classes in 
-    print_string "\n\n\n NUM CLASSES"; print_int num_classes; 
     let ctr = ref 0 in 
     let ind i j = (i * num_classes) + j + (num_classes + 1) in 
     let edge_to_ind = Memo.memo (fun (_: IntPair.t) -> incr ctr; !ctr) in 
@@ -708,16 +651,7 @@ module CfgSummarizer
     let cfg_with_dups = CFG.duplicate_terminals cfg (fun e -> if M.mem e edge_map then M.find e edge_map else [e])in 
     let int_cfg = CFG.weak_labeled cfg_with_dups get_ith get_ith ind num_classes in 
     let int_cfg = CFG.set_start int_cfg (get_ith (-1) original_call) |> CFG.prune in 
-    (* print_string "\n\n\n NEW CFG: "; print_string (SrkUtil.mk_show CFG.pp int_cfg); *)
-    (* let _int_cfg = CFG.weak_labeled cfg get_ith get_ith ind num_classes in 
-    let _int_cfg = CFG.set_start int_cfg (get_ith (-1) call) |> CFG.prune in  *)
-    (* print_string "\n\n\n OLD CFG: "; print_string (SrkUtil.mk_show CFG.pp _int_cfg); *)
-
-    (* print_string "\n\n\n ORIGINAL CFG: "; print_string (SrkUtil.mk_show CFG.pp cfg);
-    print_string "\n\n\n Duplicated CFG: "; print_string (SrkUtil.mk_show CFG.pp cfg_with_dups);
-    print_string "\n\n\n Interval CFG: "; print_string (SrkUtil.mk_show CFG.pp int_cfg); *)
-    (* print_string "\n\n\n Old Interval CFG: "; print_string (SrkUtil.mk_show CFG.pp _int_cfg); *)
-
+  
     let edge_to_terminal_dict = List.fold_left (fun dict edge -> M.add edge (mk_symbol srk ~name:("T"^IntPair.show edge) `TyInt) dict) M.empty (CFG.terminals int_cfg) in 
     let edge_to_terminal e = match M.find_opt e edge_to_terminal_dict with | Some v -> const v | None -> zero in 
     let call_to_nonterminal_dict = List.fold_left (fun dict edge -> M.add edge (mk_symbol srk ~name:("N"^IntPair.show edge) `TyInt) dict) M.empty (CFG.nonterminals int_cfg) in 
@@ -729,7 +663,7 @@ module CfgSummarizer
       List.fold_left (fun acc j -> 
         (get_ith (ind i j) call) ::  acc) acc (List.init (num_classes - i) (fun v -> i + v))) 
       [] (List.init num_classes (fun v -> v)) in 
-      
+
     let call_count call = ((if call = original_call then neg one else zero) 
       :: List.map call_to_nonterminal (all_nts call)  
     ) |> add in 
@@ -738,7 +672,6 @@ module CfgSummarizer
     let call_and_lbs = generate_lower_bounds path_graph original_call in 
     let upper_bound = List.map (fun (call, (guard, lims)) -> 
         let cc = call_count call in 
-        (* print_string "\n\n CALL COUNT: "; _print_formula cc; *)
         or1 [and1 (guard :: List.map (fun lim -> leq cc lim) lims); leq cc zero]
       ) call_and_ubs |> and1 in 
     let lower_bound = List.map (fun (call, (guard, lims)) ->
@@ -755,20 +688,9 @@ module CfgSummarizer
       |> BatEnum.fold (fun ls (index, row) -> 
         (row_to_formula index row rectified_summaries edge_to_terminal get_ith ind coherence_classes class_to_symbol) :: ls) []
       |> and1 in       
-
-      print_string "\n\n Parikh: "; print_int (Syntax.size parikh);
-      print_string "\n\n Strong Label: "; print_int (Syntax.size strong_label_constraints);
-      print_string "\n\n Transform: "; print_int (Syntax.size transform);
-      _print_formula transform;
-      print_string "\n\n UB: "; print_int (Syntax.size upper_bound);
-      _print_formula upper_bound;
-      print_string "\n\n LB: "; print_int (Syntax.size lower_bound);
       formula_to_transition (and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]) (symbol_pairs)
 
 
       let summarize call = 
-        let _c = transition_to_formula (summarize cut_path_graph call) in 
-        let a = _c in 
-        print_string "\n\nSIZE:\n";print_int (Syntax.size (a)); 
-        formula_to_transition a (symbol_pairs)
+        (summarize cut_path_graph call)
   end

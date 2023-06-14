@@ -14,5 +14,20 @@
       <include>../tasks/HOLA/*.yml</include>
       <propertyfile>../properties/unreach-call.prp</propertyfile>
     </tasks>
-  </rundefinition>
+    </rundefinition>
+    <rundefinition>
+    <option name="-cra" />
+    <tasks name="recursive-safe">
+      <includesfile>../tasks/recursive-safe.set</includesfile>
+      <propertyfile>../tasks/properties/unreach-call.prp</propertyfile>
+    </tasks>
+    <tasks name="recsimp-safe">
+      <includesfile>../tasks/recsimp-safe.set</includesfile>
+      <propertyfile>../tasks/properties/unreach-call.prp</propertyfile>
+    </tasks>
+    <tasks name="cfg-crafted">
+      <includesfile>../tasks/cfg-crafted.set</includesfile>
+      <propertyfile>../tasks/properties/unreach-call.prp</propertyfile>
+    </tasks>
+    </rundefinition>
 </benchmark>
