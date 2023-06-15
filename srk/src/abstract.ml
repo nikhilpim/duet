@@ -17,8 +17,8 @@ let opt_abstract_limit = ref (-1)
    the function does not vanish.  Counter-models are collectied in a
    system of linear equations where the variables are the coefficients
    of candidate functions. *)
-let vanishing_space srk phi terms =
-  let solver = Smt.mk_solver srk in
+let vanishing_space_with_solver srk phi terms solver =
+  Smt.Solver.reset solver;
   let zero = mk_zero srk in
   Smt.Solver.add solver [phi];
   let next_row =
@@ -67,11 +67,17 @@ let vanishing_space srk phi terms =
             go vanishing_fns mat' dim
   in
   go [] QQMatrix.zero (Array.length terms - 1)
+let vanishing_space srk phi terms =
+  vanishing_space_with_solver srk phi terms (Smt.mk_solver srk)
+
+
+let affine_hull_with_solver srk phi constants solver =
+  let basis = BatArray.of_list (mk_one srk :: (List.map (mk_const srk) constants)) in
+  vanishing_space_with_solver srk phi basis solver
+  |> List.map (Linear.term_of_vec srk (fun i -> basis.(i)))
 
 let affine_hull srk phi constants =
-  let basis = BatArray.of_list (mk_one srk :: (List.map (mk_const srk) constants)) in
-  vanishing_space srk phi basis
-  |> List.map (Linear.term_of_vec srk (fun i -> basis.(i)))
+  affine_hull_with_solver srk phi constants (Smt.mk_solver srk)
 
 let boxify srk phi terms =
   let mk_box t ivl =

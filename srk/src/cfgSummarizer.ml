@@ -84,6 +84,7 @@ module CfgSummarizer
   let lt = mk_lt srk
   let zero = mk_zero srk
   let one = mk_one srk
+  let solver = Smt.mk_solver srk  
 
   let _print_formula form = 
     print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
@@ -163,8 +164,8 @@ module CfgSummarizer
     ) uncut_path_graph uncut_path_graph *)
   
   let vasr_extract f : vasr_transform = 
-    let aff = A.vanishing_space srk f (Array.of_list (addition_basis)) in
-    let res = A.vanishing_space srk f (Array.of_list (reset_basis)) in
+    let aff = A.vanishing_space_with_solver srk f (Array.of_list (addition_basis)) solver in
+    let res = A.vanishing_space_with_solver srk f (Array.of_list (reset_basis)) solver in
     (VS.matrix_of aff, VS.matrix_of res)
   
   let vasr_to_formula (v: vasr_transform) = 
@@ -195,7 +196,7 @@ module CfgSummarizer
       |> rewrite srk ~down:(nnf_rewriter srk)
       |> Nonlinear.linearize srk
     in
-    let solver = Smt.mk_solver srk in 
+    Smt.Solver.reset solver;
     let rec go vasrs = 
       match Smt.Solver.get_model solver with 
       | `Unsat -> vasrs (*formulas represents all paths through f*)
