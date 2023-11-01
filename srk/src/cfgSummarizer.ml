@@ -29,6 +29,9 @@ type 'a label =
 type vasr_transform = 
   Q.t * Q.t
 
+type lvasr_transform = 
+  Q.t * Q.t
+
 module CfgSummarizer 
   (C : sig
     type t
@@ -84,7 +87,7 @@ module CfgSummarizer
   let lt = mk_lt srk
   let zero = mk_zero srk
   let one = mk_one srk
-  let solver = Smt.mk_solver srk  
+  let solver = Smt.mk_solver ~context:(Z3.mk_context [("timeout", "10000")]) srk  
 
   let _print_formula form = 
     print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) form)
@@ -168,6 +171,31 @@ module CfgSummarizer
     let res = A.vanishing_space_with_solver srk f (Array.of_list (reset_basis)) solver in
     (VS.matrix_of aff, VS.matrix_of res)
   
+  let lvasr_extract f : lvasr_transform = 
+    let dummy_symbols = List.mapi (fun i _ -> mk_symbol srk ~name:((string_of_int i)^"D") `TyReal) addition_basis in 
+    let dim = (List.length dummy_symbols) in 
+    let aff = A.convex_hull srk 
+      (and1 (List.fold_left2 (fun acc d t -> eq (const d) t :: acc) [f] dummy_symbols addition_basis)) 
+      dummy_symbols 
+      |> fst in 
+    let aff = Polyhedron.dual_cone dim aff |> Polyhedron.enum_generators dim
+      |> BatEnum.fold (fun acc elem -> match fst elem with 
+          | `Line -> (V.negate (snd elem)) :: snd elem :: acc
+          | `Ray -> snd elem :: acc
+          | `Vertex -> (assert (V.is_zero (snd elem))); acc (*This space should be a convex cone.*)
+        ) [] in
+    let res = A.convex_hull srk 
+      (and1 (List.fold_left2 (fun acc d t -> eq (const d) t :: acc) [f] dummy_symbols reset_basis)) 
+      dummy_symbols 
+      |> fst in
+    let res = Polyhedron.dual_cone dim res |>  Polyhedron.enum_generators dim
+      |> BatEnum.fold (fun acc elem -> match fst elem with 
+          | `Line -> (V.negate (snd elem)) :: snd elem :: acc
+          | `Ray -> snd elem :: acc
+          | `Vertex -> (assert (V.is_zero (snd elem))); acc (*This space should be a convex cone.*)
+        ) [] in
+    (VS.matrix_of aff, VS.matrix_of res)
+  
   let vasr_to_formula (v: vasr_transform) = 
     let (add_mat, reset_mat) = v in 
     BatEnum.fold (fun acc (_, row) ->
@@ -186,18 +214,40 @@ module CfgSummarizer
       ) [] (Q.rowsi reset_mat) 
     |> and1
 
+    let lvasr_to_formula (v: lvasr_transform) = 
+      let (add_mat, reset_mat) = v in 
+      BatEnum.fold (fun acc (_, row) ->
+        (List.mapi (fun ind term ->
+         mul [term ; real (V.coeff ind row)]
+        ) addition_basis
+        |> add 
+        |> leq zero) :: acc
+        ) [] (Q.rowsi add_mat) 
+      @ BatEnum.fold (fun acc (_, row) ->
+        (List.mapi (fun ind term ->
+         mul [term ; real (V.coeff ind row)]
+        ) reset_basis
+        |> add 
+        |> leq zero) :: acc
+        ) [] (Q.rowsi reset_mat) 
+      |> and1
+
   (* ===================== RECURSIVE GRAPH -> VASR-WEIGHTED CFG ===================== *)
   (* Uses vanishing space algorithm to compute VASR transitions simulating each edge in the graph *)
-  let _split_formula f = 
-    let v = vasr_extract f in 
+  let singleton_extraction extract _form f = 
+    let v = extract f in 
     [v]
-  let split_formula f = 
+
+  let splitting_extraction extract form f = 
     let phi = f 
       |> rewrite srk ~down:(nnf_rewriter srk)
       |> Nonlinear.linearize srk
     in
     Smt.Solver.reset solver;
-    let rec go vasrs = 
+    let rec go vasrs dep =
+      if dep < 0 then vasrs else (
+      Smt.Solver.reset solver;
+      Smt.Solver.add solver (phi :: (List.map (fun vasr -> not1 (form vasr)) vasrs));
       match Smt.Solver.get_model solver with 
       | `Unsat -> vasrs (*formulas represents all paths through f*)
       | `Unknown -> assert false 
@@ -218,39 +268,88 @@ module CfgSummarizer
                     mk_eq srk (mk_const srk x) (mk_const srk x'))
               symbol_pairs
             in
-          let new_vasr = vasr_extract (and1 (phi::cell)) in
-          Smt.Solver.add solver [not1 (vasr_to_formula new_vasr)];
-          go (new_vasr::vasrs)
+          let new_vasr = extract (and1 (phi::cell)) in
+          go (new_vasr::vasrs) (dep - 1))
     in
-    Smt.Solver.add solver [phi];
-    go []
-    
-  let generate_vas_transforms path_graph = 
+    go [] 3
+
+  let _lvasr_hybrid_extraction f = 
+    let (lvasrR, lvasrA) = singleton_extraction lvasr_extract lvasr_to_formula f |> List.hd in 
+    let lvasrRrows = BatEnum.fold (fun ls (_, e) -> e :: ls) [] (Q.rowsi lvasrR) in 
+    let lvasrArows = BatEnum.fold (fun ls (_, e) -> e :: ls) [] (Q.rowsi lvasrA) in 
+    let vasrs = splitting_extraction vasr_extract vasr_to_formula f in 
+    List.map (fun (vasrR, vasrA) -> 
+      let _vasrRrows = BatEnum.fold (fun ls (_, e) -> e :: ls) [] (Q.rowsi vasrR) in 
+      let _vasrArows = BatEnum.fold (fun ls (_, e) -> e :: ls) [] (Q.rowsi vasrA) in 
+      let new_lvasr = (Q.of_rows (lvasrRrows @ _vasrRrows @ (List.map V.negate _vasrRrows)),
+      Q.of_rows (lvasrArows @ _vasrArows @ (List.map V.negate _vasrArows))) in 
+      new_lvasr
+      ) vasrs
+
+
+  let generate_vas_transforms path_graph ~is_lossy = 
+    let extraction = if is_lossy then splitting_extraction lvasr_extract lvasr_to_formula else splitting_extraction vasr_extract vasr_to_formula in 
     let max_vertex = WG.max_vertex path_graph in 
     WG.fold_edges (fun (v_1, edge, v_2) (ne_map, vasr_map) -> 
         if not (M.mem (v_1, v_2) call_edges) then 
         let vasrs = P.eval ~algebra edge
           |> transition_to_formula
-          |> split_formula
+          |> extraction 
         in
         let new_edges = List.mapi (fun i v -> ((v_1 + i * max_vertex, v_2 + i * max_vertex), v)) vasrs in 
         (M.add (v_1, v_2) (List.map fst new_edges) ne_map,
           List.fold_left (fun vasr_map (e, v) ->
               M.add e v vasr_map 
             ) vasr_map new_edges
-        ) else (ne_map, vasr_map)
+        ) 
+      else (ne_map, vasr_map)
       ) path_graph (M.empty, M.empty)
+
+  let vasr_pushout = L.pushout 
+  let lvasr_pushout (a: Q.t) (b: Q.t) : Q.t * Q.t =
+    let acollen = (BatEnum.fold (fun acc (_, v) -> V.fold (fun i _ acc -> i :: acc) v acc) [] (Q.rowsi (Q.transpose a)) 
+      |> List.fold_left (fun acc e -> if e > acc then e else acc) 0 ) + 1 in 
+    let bcollen = (BatEnum.fold (fun acc (_, v) -> V.fold (fun i _ acc -> i :: acc) v acc) [] (Q.rowsi (Q.transpose b)) 
+      |> List.fold_left (fun acc e -> if e > acc then e else acc) 0) + 1 in 
+    let combine va vb = V.add va (V.of_enum (BatEnum.map (fun (v, i) -> (Mpqf.neg v, i + acollen)) (V.enum vb))) in 
+    let rec helper acols bcols = match (acols, bcols) with
+      | [], [] -> []
+      | (_, av) :: atl , [] -> combine av V.zero :: helper atl bcols
+      | [], (_, bv) :: btl -> combine V.zero bv :: helper acols btl
+      | (i, av) :: atl, (j, bv) :: btl -> 
+          if (i = j) then ( combine av bv :: helper atl btl)
+          else if (i < j) then combine av V.zero :: helper atl bcols 
+          else combine V.zero bv :: helper acols btl in
+    let constr = helper (List.rev (BatEnum.fold (fun acc e -> e :: acc) [] (Q.rowsi (Q.transpose a)))) (List.rev (BatEnum.fold (fun acc e -> e :: acc) [] (Q.rowsi (Q.transpose b)))) in 
+    let constr = List.map (fun i -> `Nonneg, (V.add_term (Mpqf.of_int 1) i V.zero)) (List.init (acollen + bcollen) (fun v -> v))
+      @  List.map (fun v -> `Zero, v) constr in  
+    let constr_enum = BatEnum.map (fun i -> List.nth constr i) (BatEnum.range 0 ~until:(List.length constr-1)) in 
+    let poly = Polyhedron.of_constraints constr_enum in 
+
+    let rows = BatEnum.fold (fun acc elem -> match fst elem with 
+          | `Ray -> snd elem :: acc
+          | `Line -> snd elem :: V.negate (snd elem) :: acc
+          | `Vertex -> assert (V.is_zero (snd elem)); acc
+      ) [] (Polyhedron.enum_generators (acollen + bcollen) poly) in
+    let split vab = V.fold (fun i v (c, d) -> if i < acollen then (V.add_term v i c, d) else (c, V.add_term v (i - acollen) d)) vab (V.zero, V.zero) in 
+    let c, d = List.map split rows |> List.split in 
+    let c, d = VS.matrix_of c, VS.matrix_of d in 
+    (assert (Q.equal (Q.mul c a) (Q.mul d b) ));
+    c, d
+
 
   (* Given a list of edges to compute consistent summaries for, does a binary search over all combinations of resets
   and additions per edge to compute a best consistent transform. *)
   let rec binary_coproduct edges current_abstraction tracking rectified_summaries 
-    vasr_map = 
+    vasr_map is_lossy = 
+    let pushout = if is_lossy then lvasr_pushout else vasr_pushout in 
     if Q.equal current_abstraction Q.zero then (rectified_summaries) else 
     match edges with 
     | [] -> 
       (* Once we are out of edges, add the consistent summaries to rectified_summaries *)
+      let max_row = List.fold_left (fun acc (_, _, mat) -> BatEnum.fold (fun acc (i, _) -> if acc < i then i else acc) acc (Q.rowsi mat)) 0 tracking in 
       List.fold_left (fun rectified_summaries (is_reset, edge, matrix) ->
-        let rows = BatEnum.fold (fun ls (_, r) -> (r, is_reset) :: ls) [] (Q.rowsi matrix) in 
+        let rows = List.map (fun i -> (Q.row i matrix, is_reset)) (List.init (max_row + 1) (fun v -> v)) in 
         if M.mem edge rectified_summaries then M.update edge edge (rows @ M.find edge rectified_summaries) rectified_summaries else
           M.add edge rows rectified_summaries
       ) rectified_summaries tracking
@@ -262,22 +361,26 @@ module CfgSummarizer
       let res_align = Q.of_rows (List.rev (BatEnum.fold (fun acc (_, r) -> cut_first_term r :: acc) [] (Q.rowsi res))) in 
 
 
-      let c, d = L.pushout aff_align current_abstraction in 
+      let c, d = pushout aff_align current_abstraction in 
       let new_tracking = List.map (fun (is_reset, edge, matrix) -> (is_reset, edge, Q.mul d matrix)) tracking in 
       let rectified_summaries = binary_coproduct tl (Q.mul d current_abstraction)
         ((0, edge, Q.mul c aff) :: new_tracking) 
-        rectified_summaries vasr_map in 
+        rectified_summaries vasr_map is_lossy in 
 
       let c, d = L.pushout res_align current_abstraction in 
       let new_tracking = List.map (fun (is_reset, edge, matrix) -> (is_reset, edge, Q.mul d matrix)) tracking in 
       binary_coproduct tl (Q.mul d current_abstraction) 
       ((1, edge, Q.mul c res) :: new_tracking)
-      rectified_summaries vasr_map
+      rectified_summaries vasr_map is_lossy
 
-  let get_rectified_summaries edges vasr_map = 
+  let vasr_identity = (Q.identity (List.init dim (fun v -> v)))
+  let lvasr_identity = Q.of_rows (BatEnum.fold (fun acc (_, r) -> r :: V.negate r :: acc) [] (Q.rowsi vasr_identity))
+
+  let get_rectified_summaries edges vasr_map ~is_lossy = 
+    let identity = if is_lossy then lvasr_identity else vasr_identity in 
     let initialized = List.fold_left (fun acc e -> M.add e [] acc) M.empty edges in 
-    binary_coproduct edges (Q.identity (List.init dim (fun v -> v))) []
-      initialized vasr_map
+    binary_coproduct edges identity []
+      initialized vasr_map is_lossy
 
   (* ===================== LINEAR BOUNDS ON CALL TREES ===================== *)
   (* Base case model of program in which all recursive calls are false *)
@@ -569,7 +672,8 @@ module CfgSummarizer
       ) coherence_classes
     |> List.concat |> and1
 
-  let row_to_formula index row rectified_summaries edge_to_terminal get_ith ind coherence_classes class_to_symbol = 
+  let row_to_formula index row rectified_summaries edge_to_terminal get_ith ind coherence_classes class_to_symbol ~is_lossy = 
+    let op = if is_lossy then leq else eq in 
     let num_classes = List.length coherence_classes in 
     let reset_edges = M.map (fun summary -> snd (List.nth summary index)) rectified_summaries  
       |> M.filter (fun _ is_reset -> is_reset = 1) in 
@@ -608,47 +712,56 @@ module CfgSummarizer
       let x' = add post_terms in 
       let cl = List.filter (List.mem index) coherence_classes |> List.hd in 
       let permutation_symbol = (class_to_symbol cl) in 
-      let form = if M.is_empty reset_edges then eq x' (add [x; all_adds_after (-1)]) else
+      let form = if M.is_empty reset_edges then op x' (add [x; all_adds_after (-1)]) else
       List.map (fun last_reset ->
         let is_eq = eq permutation_symbol (mk_int srk last_reset) in 
         let reset_cases = M.fold (fun edge _ acc -> 
           let was_reset = eq (edge_to_terminal (get_ith (ind last_reset last_reset) edge)) (one) in 
-          let resulting_transorm = eq x' (add [M.find edge offsets; all_adds_after last_reset]) in 
+          let resulting_transorm = op x' (add [M.find edge offsets; all_adds_after last_reset]) in 
           (and1 [was_reset; resulting_transorm]) :: acc
           ) reset_edges [] in 
           let all_edges_zero = M.fold (fun edge _ acc -> 
             eq (edge_to_terminal (get_ith (ind last_reset last_reset) edge)) (zero) :: acc
             ) reset_edges [] |> and1 in
-          let unreset_case = and1 [all_edges_zero; eq x' (add [x; all_adds_after (-1)])] in  
+          let unreset_case = and1 [all_edges_zero; op x' (add [x; all_adds_after (-1)])] in  
           if1 is_eq (or1 (unreset_case :: reset_cases))
         ) (List.init num_classes (fun v -> v))
       |> and1 in form
 
 
   let summarize path_graph original_call = 
+    let is_lossy = true in 
     let cfg = CFG.set_start (gen_cfg path_graph G.src) original_call |> CFG.prune in
     let reachable = CFG.terminals cfg in 
     if List.length reachable = 0 then (algebra `One) else 
-    let edge_map, vasr_map = generate_vas_transforms path_graph in 
+
+    let edge_map, vasr_map = generate_vas_transforms path_graph ~is_lossy in 
     let reachable = List.fold_left (fun acc e -> acc @ M.find e edge_map) [] reachable in 
-    let rectified_summaries = get_rectified_summaries reachable vasr_map in
+    let rectified_vasrs = get_rectified_summaries reachable vasr_map ~is_lossy in
+
+    (* Prune VASRs that were rectified to be equal*)
     let edge_map = M.filter (fun e _ -> List.mem e reachable) edge_map 
       |> M.map (fun e_ls ->
       let cont s1 s2 = List.for_all (fun v -> List.mem v s2) s1 in
       let eq s1 s2 = cont s1 s2 && cont s2 s1 in 
-      List.fold_left (fun acc e -> if List.exists (fun e' -> eq (M.find e rectified_summaries) (M.find e' rectified_summaries)) acc then acc else e :: acc) [] e_ls 
+      List.fold_left (fun acc e -> if List.exists (fun e' -> eq (M.find e rectified_vasrs) (M.find e' rectified_vasrs)) acc then acc else e :: acc) [] e_ls 
       ) in 
     let reachable = M.fold (fun _ edge_ls acc -> edge_ls @ acc) edge_map [] in 
-    let rectified_summaries = M.filter (fun e _ -> List.mem e reachable) rectified_summaries in 
-    let coherence_classes = get_coherence_classes rectified_summaries in 
+    let rectified_vasrs = M.filter (fun e _ -> List.mem e reachable) rectified_vasrs in 
+    
+
+
+    let coherence_classes = get_coherence_classes rectified_vasrs in 
     let num_classes = List.length coherence_classes in 
+
+    (* Helper functions for formula.*)
     let ctr = ref 0 in 
     let ind i j = (i * num_classes) + j + (num_classes + 1) in 
     let edge_to_ind = Memo.memo (fun (_: IntPair.t) -> incr ctr; !ctr) in 
-    let get_ith = (fun (i:int) e -> (i, edge_to_ind e)) in     
+    let get_ith = (fun (i:int) e -> (i, edge_to_ind e)) in
+    (* let ind = fun x -> fun y -> edge_to_ind (x, y) in  *)
 
     let class_to_symbol = Memo.memo (fun cl -> mk_symbol srk ~name:("perm"^(string_of_int (List.hd cl))) `TyInt |> const) in 
-    
     let cfg_with_dups = CFG.duplicate_terminals cfg (fun e -> if M.mem e edge_map then M.find e edge_map else [e])in 
     let int_cfg = CFG.weak_labeled cfg_with_dups get_ith get_ith ind num_classes in 
     let int_cfg = CFG.set_start int_cfg (get_ith (-1) original_call) |> CFG.prune in 
@@ -683,14 +796,13 @@ module CfgSummarizer
     let calls = List.fold_left (fun acc (call, _) -> (all_nts call) @ acc) [] call_and_ubs in 
     let parikh = CFG.parikh srk (CFG.compress int_cfg (calls) ) edge_to_terminal call_to_nonterminal in 
     let strong_label_constraints = get_strong_labeling_constraints 
-      reachable coherence_classes class_to_symbol edge_to_terminal rectified_summaries get_ith ind in 
-    let transform = M.find (List.hd reachable) rectified_summaries 
+      reachable coherence_classes class_to_symbol edge_to_terminal rectified_vasrs get_ith ind in 
+    let transform = M.find (List.hd reachable) rectified_vasrs 
       |> List.map fst |> VS.matrix_of |> Q.rowsi
       |> BatEnum.fold (fun ls (index, row) -> 
-        (row_to_formula index row rectified_summaries edge_to_terminal get_ith ind coherence_classes class_to_symbol) :: ls) []
-      |> and1 in       
-      formula_to_transition (and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]) (symbol_pairs)
-
+        (row_to_formula index row rectified_vasrs edge_to_terminal get_ith ind coherence_classes class_to_symbol ~is_lossy) :: ls) []
+      |> and1 in
+      formula_to_transition(and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]) symbol_pairs
 
       let summarize call = 
         (summarize cut_path_graph call)

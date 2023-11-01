@@ -405,6 +405,30 @@ let cut_graph wg c =
     ) cut_set (add_vertex cg u)
   ) cut_set (empty wg.algebra)
 
+
+(* if a vertex has just one successor and predecessor, it is unnecessary.  *)
+  let simplify_edges wg c = 
+    fold_vertex (fun v acc -> 
+      if List.mem v c then acc else
+      let pred_es = fold_pred_e (fun e a -> e :: a) acc v [] in 
+      let succ_es = fold_succ_e (fun e a -> e :: a) acc v [] in 
+      (* if not (List.length pred_es = 1 && List.length succ_es = 1) then acc else  *)
+      let acc = List.fold_left (fun acc (p, wp, _) -> 
+        List.fold_left (fun acc (_, ws, s) ->
+            add_edge acc p (wg.algebra.mul wp ws) s
+          ) acc succ_es 
+        ) acc pred_es in 
+      let acc = List.fold_left (fun acc (v1, _, v2) ->
+        remove_edge acc v1 v2
+        ) acc pred_es in 
+      let acc = List.fold_left (fun acc (v1, _, v2) ->
+        remove_edge acc v1 v2
+        ) acc succ_es in 
+      acc
+      ) 
+    wg wg
+
+
 (* Line graphs swaps vertices and edges *)
 module LineGraph = struct
   type t = U.t

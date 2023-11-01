@@ -68,6 +68,7 @@ val omega_path_weight : 'a t -> ('a,'b) omega_algebra -> vertex -> 'b
                           through any node in c \}> **)
 val cut_graph : 'a t -> vertex list -> 'a t
 
+val simplify_edges : 'a t -> vertex list -> 'a t
 (** Remove a vertex from a graph. *)
 val remove_vertex : 'a t -> vertex -> 'a t
 

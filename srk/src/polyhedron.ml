@@ -403,7 +403,7 @@ let of_apron0 man abstract0 =
 
 let constrained_dual_cone dim polyhedron offset = 
   (* Given polyhedron Ax >= b, form the constraint system
-    lambda * A = y /\ -1^neg * (lambda * b - offset) >= 0.
+    lambda * A = y /\ (lambda * b - offset) >= 0.
     Then project out the lambda dimensions.
    *)
   (* map [0 .. nb_constraints] to [dim .. dim + nb_constraints] *)

@@ -25,7 +25,7 @@ module Solver : sig
     [ `Sat | `Unsat of ('a formula) list | `Unknown ]
 end
 
-val mk_solver : ?theory:string -> 'a context -> 'a Solver.t
+val mk_solver : ?context:SrkZ3.z3_context -> ?theory:string -> 'a context -> 'a Solver.t
 
 (** Compute a model of a formula.  The model is abstract -- it can be used to
     evaluate terms, but its bindings may not be enumerated (see
