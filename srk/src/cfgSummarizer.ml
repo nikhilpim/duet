@@ -244,10 +244,10 @@ module CfgSummarizer
       |> Nonlinear.linearize srk
     in
     Smt.Solver.reset solver;
-    let rec go vasrs dep =
-      if dep < 0 then vasrs else (
+    let rec go vasrs =
+      let curr_formula = and1 (phi :: (List.map (fun vasr -> not1 (form vasr)) vasrs)) in 
       Smt.Solver.reset solver;
-      Smt.Solver.add solver (phi :: (List.map (fun vasr -> not1 (form vasr)) vasrs));
+      Smt.Solver.add solver [curr_formula];
       match Smt.Solver.get_model solver with 
       | `Unsat -> vasrs (*formulas represents all paths through f*)
       | `Unknown -> assert false 
@@ -269,9 +269,9 @@ module CfgSummarizer
               symbol_pairs
             in
           let new_vasr = extract (and1 (phi::cell)) in
-          go (new_vasr::vasrs) (dep - 1))
+          go (new_vasr::vasrs) 
     in
-    go [] 3
+    go []
 
   let _lvasr_hybrid_extraction f = 
     let (lvasrR, lvasrA) = singleton_extraction lvasr_extract lvasr_to_formula f |> List.hd in 
