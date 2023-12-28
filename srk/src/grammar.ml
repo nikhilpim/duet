@@ -44,10 +44,12 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     terminals = List.fold_left (fun s o -> match o with | T o -> (TSet.add o s) | _ -> s) cfg.terminals out; 
     nonterminals = List.fold_left (fun s o -> match o with | N o -> (NSet.add o s) | _ -> s) cfg.nonterminals (N nt :: out); 
     }
+  let get_start cfg = cfg.start
   let set_start cfg s = { cfg with start = s}
 
   let nonterminals cfg = NSet.elements cfg.nonterminals
   let terminals cfg  = TSet.elements cfg.terminals
+  let fold_prods fn t acc = PSet.fold (fun (nt, gls) acc -> fn nt gls acc) t.productions acc 
 
   let nname n = "N" ^ (N.show n)
   let tname t = "T" ^ (T.show t)
@@ -212,7 +214,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let dist = mk_and context (List.map dist_helper nts) in 
     mk_and context [outgoing; incoming; dist; nonneg]
     
-  let is_weak_labelable grammar = 
+  let bounded_production_size grammar = 
     PSet.fold (fun (_, out) b  -> b && (List.length out <= 2)) grammar.productions true
     
   (* Generates grammar to produce "weak labelings" of input grammar, marking n symbols in each word
@@ -226,7 +228,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
   (get_ith_nt (ind i j) nt) should derive w_i t_i ... t_j w_{j+1} 
   (get_ith (-1) nt) is a special dummy node for if we wish to set nt to be the start symbol*)
   let weak_labeled grammar get_ith_nt get_ith_t ind n = 
-    assert (is_weak_labelable grammar);
+    assert (bounded_production_size grammar);
 
     (* Productions for subgrammars generating w_i *)
     let all_prods = BatEnum.fold (fun ls index -> 
@@ -267,7 +269,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
     let all_prods = BatEnum.fold (fun ls i -> (List.map (fun nt -> (get_ith_nt (-1) nt), [N (get_ith_nt (ind i (n-1)) nt)]) (NSet.elements grammar.nonterminals)) @ ls) all_prods (0--^n) in 
     let all_prods = (List.map (fun nt -> (get_ith_nt (-1) nt), [N (get_ith_nt n nt)]) (NSet.elements grammar.nonterminals)) @ all_prods in  
     List.fold_left (fun cfg (nt, out) -> add_production cfg nt out) (empty (get_ith_nt (-1) grammar.start)) all_prods
-
+  
   
   let duplicate_terminals grammar (dups: terminal -> terminal list) = 
     PSet.fold (fun (l, r) grammar ->
@@ -281,7 +283,7 @@ module MakeCFG (N : Symbol) (T : Symbol) = struct
       List.fold_left (fun grammar newr ->
         add_production grammar l newr) grammar new_rs 
       ) grammar.productions grammar
-
-
+  
+  
 end
 

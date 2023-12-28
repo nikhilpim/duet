@@ -4,7 +4,7 @@ module TF = TransitionFormula
 module P = Pathexpr
 
 
-module IntPair = WG.IntPair
+module IntPair = SrkUtil.IntPair
 
 type 'a label =
 | Weight of 'a
@@ -37,14 +37,12 @@ module CfgSummarizer
         val star : t -> t
         val exists : (var -> bool) -> t -> t
     end) 
-    (G : sig
+    (Input : sig
         val graph : T.t label WG.weighted_graph
         val src : int
-        val path_graph : WG.RecGraph.t -> P.simple P.t WG.weighted_graph
-        val call_edges : WG.RecGraph.t -> IntPair.t BatMap.Make(IntPair).t
-        val context : WG.RecGraph.t -> P.context 
-        val fold_reachable_edges : (int -> int -> 'a -> 'a) -> 'b WG.weighted_graph -> int -> 'a -> 'a
-        val scc : IntPair.t -> WG.RecGraph.t -> IntPair.t list
+        val lossy : bool
+        val split_disjuncts : bool
+        val ind_bounds : bool
     end
     )
 : (sig 

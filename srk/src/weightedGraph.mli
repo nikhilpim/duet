@@ -27,11 +27,7 @@ module U : Graph.Sig.G with type V.t = int
 (** Context free grammars *)
 module CFG : sig type t end
 
-module IntPair : sig
-   type t = int * int [@@deriving ord, eq]
-   val hash : t -> int
-   val show : t -> string
-end
+module IntPair = SrkUtil.IntPair
 
 type vertex = int
 
@@ -209,8 +205,9 @@ module RecGraph : sig
      weights to call edges. *)
   val mk_weight_query : query -> 'a Pathexpr.nested_algebra -> 'a weight_query
 
-  (** Build call summaries via CFG reachability relation. *)
-  val summarize_cfg : int -> t -> 'a Pathexpr.nested_algebra -> (call -> 'a) -> 'a weight_query
+  val summarize_vasr : 'a Syntax.context -> query -> 'b Pathexpr.nested_algebra -> 
+                        (Syntax.symbol * Syntax.symbol) list -> ('b -> 'a Syntax.formula)
+                         -> ('a Syntax.formula -> 'b) ->'b weight_query
 
   (** Build call summaries via successive approximation. *)
   val summarize_iterative : query ->

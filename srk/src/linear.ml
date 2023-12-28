@@ -45,6 +45,8 @@ module QQVector = struct
   let show = SrkUtil.mk_show pp
   let compare = compare QQ.compare
   let hash = hash (fun (k,v) -> Hashtbl.hash (k, QQ.hash v))
+  let slice i j vec = BatEnum.filter_map (fun (elem, dim) -> if (i <= dim && dim < j) then Some (elem, dim-i) else None)
+  (enum vec) |> of_enum 
 end
 
 module QQMatrix = struct
@@ -90,6 +92,7 @@ module QQMatrix = struct
                        Some (eigenvalue, m)
                      else
                        None)
+    let col_slice i j m = map_rows (QQVector.slice i j) m 
 end
 
 exception No_solution

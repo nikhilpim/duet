@@ -53,7 +53,7 @@ module Make
 
   (* Create a query structure. Uses cfg reachability for summarization procedure. *)
   val mk_cfg_query: transition label WeightedGraph.weighted_graph ->
-   vertex -> transition WeightedGraph.RecGraph.weight_query
+   vertex -> lossy:bool -> split_disjuncts:bool -> ind_bounds:bool -> transition WeightedGraph.RecGraph.weight_query 
 
   (** Create a query structure.  The optional [delay] parameter specifies the
       widening delay to use during summary computation. *)

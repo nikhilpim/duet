@@ -50,22 +50,78 @@ module Make
   type vertex = int
   type transition = T.t
   type tlabel = T.t label
-
   type query = T.t WG.RecGraph.weight_query
 
-  let mk_cfg_query ts source = 
-    let module M = BatMap.Make(WG.IntPair) in 
-    let module G = struct 
+  let mk_cfg_query ts source ~lossy ~split_disjuncts ~ind_bounds = 
+    let module M = BatMap.Make(SrkUtil.IntPair) in 
+    let module Input = struct 
       let graph = ts
       let src = source
-      let path_graph = WG.RecGraph.path_graph
-      let call_edges = WG.RecGraph.call_edges
-      let context = WG.RecGraph.context 
-      let fold_reachable_edges = WG.RecGraph.fold_reachable_edges
-      let scc = (fun call graph -> WG.RecGraph.scc_calls graph call)
+      let lossy = lossy
+      let ind_bounds = ind_bounds
+      let split_disjuncts = split_disjuncts
     end in 
-    let module S = CfgSummarizer.CfgSummarizer(C)(Var)(T)(G) in
-    WG.RecGraph.summarize_cfg source S.rg S.algebra S.summarize
+    let module S = CfgSummarizer.CfgSummarizer(C)(Var)(T)(Input) in
+    let query = WG.RecGraph.mk_query S.rg source in 
+    let wq = WG.RecGraph.mk_weight_query query S.algebra in 
+    M.iter (fun _ call ->
+    WG.RecGraph.set_summary wq call (S.summarize call)) (WG.RecGraph.call_edges S.rg);
+    wq
+  let _mk_cfg_query2 ts source = 
+    let module S = Set.Make(Var) in 
+    let rg =
+      WG.fold_vertex
+        (fun v rg -> WG.RecGraph.add_vertex rg v)
+        ts
+        (WG.RecGraph.empty ())
+      |> WG.fold_edges (fun (u, w, v) rg ->
+             match w with
+             | Call (en,ex) ->
+                WG.RecGraph.add_call_edge rg u (en,ex) v
+             | Weight _ -> WG.RecGraph.add_edge rg u v)
+           ts in 
+    let algebra = function
+        | `Edge (u,v) ->
+          begin match WG.edge_weight ts u v with
+          | Weight w -> w
+          | Call _ -> assert false
+          end
+        | `Add (x, y) -> T.add x y
+        | `Mul (x, y) -> T.mul x y
+        | `Star x -> T.star x
+        | `Segment x -> T.exists Var.is_global x
+        | `Zero -> T.zero
+        | `One -> T.one 
+      in 
+    let global_variables = WG.fold_edges (fun (_, w, _) s -> 
+      match w with
+        | Weight t -> BatEnum.fold (fun s (var, _) -> if Var.is_global var then (S.add var s) else s) s (T.transform t)
+        | Call _ -> s
+      ) ts S.empty in
+    let symbol_pairs = List.map T.symbol_pair (S.elements global_variables) in 
+    let transition_to_formula t = 
+        let tf = T.to_transition_formula t in 
+        let unincluded_globals = S.filter (fun var -> not (T.mem_transform var t)) global_variables in 
+        (S.fold (fun v ls -> 
+          let (pre, post) = T.symbol_pair v in
+          (mk_eq C.context (mk_const C.context pre) (mk_const C.context post)) :: ls) unincluded_globals []) 
+          |> List.cons (TransitionFormula.formula tf)
+          |>  mk_and C.context
+      in
+    let formula_to_transition transform_symbols formula  = 
+      List.map (fun (pre, post) -> 
+        match Var.of_symbol pre with 
+        | Some var -> (var, Syntax.mk_const C.context post)
+        | None -> assert false) transform_symbols
+      |> T.construct formula in
+
+    WG.RecGraph.summarize_vasr
+      C.context
+      (WG.RecGraph.mk_query rg source)
+      algebra
+      symbol_pairs
+      transition_to_formula
+      (formula_to_transition symbol_pairs)
 
   let mk_query ?(delay=1) ts source dom =
     let rg =
@@ -516,11 +572,7 @@ module Make
   end
 
   module IntervalAnalysis = Fixpoint.Make(WGG)(Box)
-  module IntPair = struct
-    type t = int * int [@@deriving ord]
-    let equal (x,y) (x',y') = (x=x' && y=y')
-    let hash = Hashtbl.hash
-  end
+  module IntPair = SrkUtil.IntPair
 
   module PS = BatSet.Make(IntPair)
   module PHT = BatHashtbl.Make(IntPair)

@@ -25,6 +25,7 @@ module QQVector : sig
   val pp_term : (Format.formatter -> int -> unit) -> Format.formatter -> t -> unit
   val show : t -> string
   val hash : t -> int
+  val slice : int -> int -> t -> t
 end
 
 (** Sparse matrix with rational entries. *)
@@ -42,6 +43,10 @@ module QQMatrix : sig
      over the given dimensions, along with their algebraic
      multiplicities. *)
   val rational_eigenvalues : t -> int list -> (QQ.t * int) list
+
+  (** [col_slice i j m] returns the sliced matrix m[i:j] omitting all columns before the ith
+      and omitting the jth column and all columns after. *)
+  val col_slice : int -> int -> t -> t
 end
 
 (** [nullspace mat dimensions] computes a basis for the vector space [{ x :

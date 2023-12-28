@@ -3,6 +3,25 @@ open BatPervasives
 
 module A = BatDynArray
 
+module IntPair = struct
+  type t = int * int [@@deriving ord, eq]
+  let hash = Hashtbl.hash
+  let show (i, j : t)  = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ")"
+end
+
+module IntTriple = struct
+  type t = (int * int * int) [@@deriving ord, eq]
+  let hash = Hashtbl.hash
+  let show (i, j, k : t) = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ", " ^ (string_of_int k) ^ ")"
+end
+
+module IntQuad = struct
+  type t = (int * int * int * int) [@@deriving ord, eq]
+  let hash = Hashtbl.hash
+  let show ((i, j, k, l) : t) = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ", " ^ (string_of_int k) ^ ", " ^ (string_of_int l) ^ ")"
+end
+
+
 (** Search for an index in a sorted array *)
 let search ?compare:(compare = Stdlib.compare) v array =
   let rec go min max =

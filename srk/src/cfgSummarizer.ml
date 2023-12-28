@@ -9,7 +9,7 @@ module P = Pathexpr
 module A = Abstract
 module TF = TransitionFormula
 
-module IntPair = WG.IntPair
+module IntPair = SrkUtil.IntPair
 
 module IS = Set.Make(IntPair)
 module M = BatMap.Make(IntPair)
@@ -59,14 +59,12 @@ module CfgSummarizer
     val star : t -> t
     val exists : (var -> bool) -> t -> t
   end) 
-  (G : sig
+  (Input : sig
     val graph : T.t label WG.weighted_graph
     val src : int
-    val path_graph : WG.RecGraph.t -> P.simple P.t WG.weighted_graph
-    val call_edges : WG.RecGraph.t -> IntPair.t M.t
-    val context : WG.RecGraph.t -> P.context 
-    val fold_reachable_edges : (int -> int -> 'a -> 'a) -> 'b WG.weighted_graph -> int -> 'a -> 'a
-    val scc : IntPair.t -> WG.RecGraph.t -> IntPair.t list
+    val lossy : bool
+    val split_disjuncts : bool
+    val ind_bounds : bool
   end
   ) = struct 
 
@@ -98,20 +96,20 @@ module CfgSummarizer
   (* Generates the recursive graph model to be analyzed *)
   let rg = WG.fold_vertex
     (fun v rg -> WG.RecGraph.add_vertex rg v)
-      G.graph
+      Input.graph
       (WG.RecGraph.empty ())
     |> WG.fold_edges (fun (u, w, v) rg ->
         match w with
         | Call (en,ex) ->
             WG.RecGraph.add_call_edge rg u (en,ex) v
         | Weight _ -> WG.RecGraph.add_edge rg u v)
-      G.graph
+      Input.graph
 
-  let call_edges = G.call_edges rg
+  let call_edges = WG.RecGraph.call_edges rg
 
   let algebra = function
     | `Edge (u,v) ->
-       begin match WG.edge_weight G.graph u v with
+       begin match WG.edge_weight Input.graph u v with
        | Weight w -> w
        | Call _ -> assert false
        end
@@ -127,7 +125,7 @@ module CfgSummarizer
     match w with 
       | Weight t -> BatEnum.fold (fun s (var, _) -> if Var.is_global var then (S.add var s) else s) s (T.transform t)
       | Call _ -> s
-    ) G.graph S.empty 
+    ) Input.graph S.empty 
 
   let transition_to_formula t = 
     let tf = T.to_transition_formula t in 
@@ -155,16 +153,12 @@ module CfgSummarizer
 
   (* To get more descriptive VASR summaries, we use a simplified version of the normal path graph in we only 
   consider the start vertices and vertices belonging to calls.  *)
-  let cut_path_graph = WG.cut_graph (G.path_graph rg) 
-  (G.src::M.fold (fun (v1, v2) (e1, e2) ls -> v1 :: v2 :: e1 :: e2 :: ls) call_edges []
+  let cut_path_graph = WG.cut_graph (WG.RecGraph.path_graph rg) 
+  (Input.src::M.fold (fun (v1, v2) (e1, e2) ls -> v1 :: v2 :: e1 :: e2 :: ls) call_edges []
   |> List.fold_left (fun acc item -> if List.mem item acc then acc else item :: acc) [])
   let cut_path_graph = WG.fold_edges (fun (v1, e, v2) g -> 
     if not (M.mem (v1, v2) call_edges) && Syntax.is_false (P.eval ~algebra e |> transition_to_formula) then (WG.remove_edge g v1 v2) else g
     ) cut_path_graph cut_path_graph 
-  (* let uncut_path_graph = G.path_graph rg
-  let uncut_path_graph = WG.fold_edges (fun (v1, e, v2) g -> 
-    if not (M.mem (v1, v2) call_edges) && Syntax.is_false (P.eval ~algebra e |> transition_to_formula) then (WG.remove_edge g v1 v2) else g
-    ) uncut_path_graph uncut_path_graph *)
   
   let vasr_extract f : vasr_transform = 
     let aff = A.vanishing_space_with_solver srk f (Array.of_list (addition_basis)) solver in
@@ -287,14 +281,15 @@ module CfgSummarizer
       ) vasrs
 
 
-  let generate_vas_transforms path_graph ~is_lossy = 
-    let extraction = if is_lossy then splitting_extraction lvasr_extract lvasr_to_formula else splitting_extraction vasr_extract vasr_to_formula in 
+  let generate_vas_transforms path_graph ~is_lossy ~splitting = 
+    let extraction = (if splitting then splitting_extraction else singleton_extraction) in
+    let (extract, form) = if is_lossy then lvasr_extract, lvasr_to_formula else vasr_extract, vasr_to_formula in 
     let max_vertex = WG.max_vertex path_graph in 
     WG.fold_edges (fun (v_1, edge, v_2) (ne_map, vasr_map) -> 
         if not (M.mem (v_1, v_2) call_edges) then 
         let vasrs = P.eval ~algebra edge
           |> transition_to_formula
-          |> extraction 
+          |> extraction extract form
         in
         let new_edges = List.mapi (fun i v -> ((v_1 + i * max_vertex, v_2 + i * max_vertex), v)) vasrs in 
         (M.add (v_1, v_2) (List.map fst new_edges) ne_map,
@@ -384,8 +379,10 @@ module CfgSummarizer
 
   (* ===================== LINEAR BOUNDS ON CALL TREES ===================== *)
   (* Base case model of program in which all recursive calls are false *)
+  let graph_context = WG.RecGraph.context rg 
+
   let base_case_model path_graph = WG.map_weights (fun v1 weight v2 ->
-      if M.mem (v1, v2) call_edges then P.mk_zero (G.context rg) 
+      if M.mem (v1, v2) call_edges then P.mk_zero graph_context 
       else weight
     ) path_graph
 
@@ -431,14 +428,14 @@ module CfgSummarizer
 
       let graph = WG.add_vertex graph dummy_entry in 
       let graph = WG.add_vertex graph dummy_exit in 
-      let graph = WG.add_edge graph dummy_entry (P.mk_edge (G.context rg) dummy_entry en) en in 
+      let graph = WG.add_edge graph dummy_entry (P.mk_edge graph_context dummy_entry en) en in 
       let summaries = M.add (dummy_entry, en) setting_transition summaries in 
-      let (graph, summaries) = G.fold_reachable_edges (fun v1 v2 (graph, summaries) ->
+      let (graph, summaries) = WG.RecGraph.fold_reachable_edges (fun v1 v2 (graph, summaries) ->
         if (M.mem (v1, v2) call_edges) then (
           let transition = detracting_transition (M.find (v1, v2) call_edges) in 
           let summaries = M.add (v1, v2) transition summaries in 
           let summaries = M.add (v1, dummy_exit) transition summaries in 
-          (WG.add_edge graph v1 (P.mk_edge (G.context rg) v1 dummy_exit) dummy_exit, summaries)
+          (WG.add_edge graph v1 (P.mk_edge graph_context v1 dummy_exit) dummy_exit, summaries)
         ) 
         else (graph, summaries)
         ) path_graph en (graph, summaries) in 
@@ -520,7 +517,7 @@ module CfgSummarizer
   (* Generates upper bounds for calls. Returns a guard and a set of limits. The way to apply the bound is 
   (guard /\ for all lim in lims #(call) <= lim) \/ #(call) <= 1 *)
   let generate_upper_bounds path_graph call = 
-    let component = call :: ((G.scc call rg) |> List.filter (fun e -> not (e = call))) in 
+    let component = call :: ((WG.RecGraph.scc_calls rg call) |> List.filter (fun e -> not (e = call))) in 
     (* let r, deltas = recursive_case path_graph component true in  *)
     let r, deltas, counter = _rec_case path_graph component true in 
     let all_deltas = List.flatten deltas in 
@@ -559,7 +556,7 @@ module CfgSummarizer
     List.combine component bounds 
 
   let generate_lower_bounds path_graph call = 
-    let component = call :: ((G.scc call rg) |> List.filter (fun e -> not (e = call))) in 
+    let component = call :: ((WG.RecGraph.scc_calls rg call) |> List.filter (fun e -> not (e = call))) in 
     let r, deltas = recursive_case path_graph component false in 
     let b = List.map (fun call -> base_case path_graph call) component in 
     let all_deltas = List.flatten deltas in 
@@ -730,12 +727,15 @@ module CfgSummarizer
 
 
   let summarize path_graph original_call = 
-    let is_lossy = true in 
-    let cfg = CFG.set_start (gen_cfg path_graph G.src) original_call |> CFG.prune in
+    let is_lossy = Input.lossy in 
+    let splitting = Input.split_disjuncts in 
+    let ind_bounds = Input.ind_bounds in 
+
+    let cfg = CFG.set_start (gen_cfg path_graph Input.src) original_call |> CFG.prune in
     let reachable = CFG.terminals cfg in 
     if List.length reachable = 0 then (algebra `One) else 
 
-    let edge_map, vasr_map = generate_vas_transforms path_graph ~is_lossy in 
+    let edge_map, vasr_map = generate_vas_transforms path_graph ~is_lossy ~splitting in 
     let reachable = List.fold_left (fun acc e -> acc @ M.find e edge_map) [] reachable in 
     let rectified_vasrs = get_rectified_summaries reachable vasr_map ~is_lossy in
 
@@ -781,7 +781,7 @@ module CfgSummarizer
     let call_count call = ((if call = original_call then neg one else zero) 
       :: List.map call_to_nonterminal (all_nts call)  
     ) |> add in 
-
+    
     let call_and_ubs = generate_upper_bounds path_graph original_call in 
     let call_and_lbs = generate_lower_bounds path_graph original_call in 
     let upper_bound = List.map (fun (call, (guard, lims)) -> 
@@ -802,7 +802,10 @@ module CfgSummarizer
       |> BatEnum.fold (fun ls (index, row) -> 
         (row_to_formula index row rectified_vasrs edge_to_terminal get_ith ind coherence_classes class_to_symbol ~is_lossy) :: ls) []
       |> and1 in
-      formula_to_transition(and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound]) symbol_pairs
+      let f = if (ind_bounds) then 
+        and1 [parikh; strong_label_constraints; transform; upper_bound; lower_bound] 
+    else and1 [parikh; strong_label_constraints; transform] in 
+      formula_to_transition f symbol_pairs
 
       let summarize call = 
         (summarize cut_path_graph call)

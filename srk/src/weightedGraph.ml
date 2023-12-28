@@ -7,16 +7,14 @@ module L = Loop.Make(U)
 module D = Graph.Dominator.Make(U)
 module C = Graph.Components.Make(U)
 
-module IntPair = struct
-  type t = int * int [@@deriving ord, eq]
-  let hash = Hashtbl.hash
-  let show (i, j : t)  = "(" ^ (string_of_int i) ^ ", " ^ (string_of_int j) ^ ")"
-end
+module IntPair = SrkUtil.IntPair
+module IntTriple = SrkUtil.IntTriple
+module IntQuad = SrkUtil.IntQuad
 
-module N = IntPair  
+module N = IntPair
 module T = IntPair
 module CFG = Grammar.MakeCFG(N)(T)
-
+module ICFG = Grammar.MakeCFG(IntQuad)(IntTriple)
 module M = BatMap.Make(IntPair)
 
 type 'a algebra =
@@ -788,13 +786,6 @@ module RecGraph = struct
         t.path_graph search acc in 
         gather [call] (fst call)
 
-    let summarize_cfg 
-    source rg algebra summarize = 
-      let query = mk_query rg source in 
-      let wq = mk_weight_query query algebra in 
-      M.iter (fun _ call ->
-        set_summary wq call (summarize call)) query.recgraph.call_edges;
-      wq
 
   let summarize_iterative
         (type a)
@@ -845,6 +836,106 @@ module RecGraph = struct
            set_summary weight_query call zero;
            HT.add abstract_summaries call abstract_zero);
     List.iter fix (CallGraphLoop.loop_nest callgraph);
+    weight_query
+
+    let wg_to_cfg wg src call_edges = 
+      let cfg = CFG.empty (src, src) in 
+      let nt_ends = M.fold (fun _ (_, call_end) acc -> call_end :: acc) call_edges [] in 
+  
+      (* To be applied to every edge (v_1, v_2) in the weighted graph. If the edge is a call edge, 
+      adds N(v_1, end) -> N(call) N(v_2, end) where call is the call of (v_1, v_2) and end
+      is every possible nonterminal target. If the edge is not a call edge, adds
+      N(v_1, end) -> T(v_1, v_2) N(v_2)  *)
+      let helper (v_1, _,  v_2) acc = 
+        if M.mem (v_1, v_2) call_edges then
+          let call = M.find (v_1, v_2) call_edges in
+          List.fold_left (fun cfg e -> CFG.add_production cfg (v_1, e) [N call ; N (v_2, e)]) acc nt_ends
+        else
+          List.fold_left (fun cfg e -> CFG.add_production cfg (v_1, e) [T (v_1, v_2) ; N (v_2, e)]) acc nt_ends
+      in 
+  
+      let cfg = fold_edges helper wg cfg in
+      (* Once we have reached the target of a particular nonterminal, that symbol is allowed 
+      to go to null *)
+      let cfg = List.fold_left (fun cfg e -> CFG.add_production cfg (e, e) []) cfg nt_ends in
+      cfg 
+
+  let interval_grammar (grammar : CFG.t) (dim : int) : ICFG.t = 
+    assert (CFG.bounded_production_size grammar); 
+    let new_productions = (List.init (dim + 1) (fun i -> 
+        List.init (dim + 1 - i) (fun k ->
+          List.init (dim + 1 - i - k) (fun j -> 
+            let k = k + i in 
+            let j = j + k in 
+            CFG.fold_prods (fun nt gls acc -> ( match gls with 
+              | [N n1; N n2] -> 
+                let nt' = (2*i + 1, 2*j + 1, (fst nt), (snd nt)) in 
+                let n1' = (2 * i + 1, 2 * k + 1, fst n1, snd n1) in
+                let n2' = (2 * k + 1, 2 * j + 1, fst n2, snd n2) in 
+                (nt', [ICFG.N n1'; ICFG.N n2']) :: acc
+                | _ -> acc
+              )) grammar [] 
+            ) |> List.flatten
+          ) |> List.flatten
+      ) |> List.flatten) @
+      (List.init (dim + 1) (fun i -> 
+        List.init (dim + 1 - i) (fun j -> 
+          List.init (1 + 2 * (j - i)) (fun k ->
+            let j = j + i in 
+            let k = 2 * i + 1 + k in 
+            CFG.fold_prods (fun nt gls acc -> (match gls with 
+            | [T t] -> 
+              let nt' = (2*i + 1, 2*j + 1, fst nt, snd nt) in 
+              let t' = k, fst t, snd t in 
+              (nt', [ICFG.T t']) :: acc
+            | _ -> acc
+            )) grammar []
+            ) |> List.flatten ) |> List.flatten ) |> List.flatten)
+      in 
+    List.fold_left (fun ig (nt, gls) -> ICFG.add_production ig nt gls) (ICFG.empty (1, 2 * dim + 1, fst (CFG.get_start grammar), snd (CFG.get_start grammar))) new_productions
+    |> ICFG.prune
+
+  let summarize_vasr 
+      (context : 'a Syntax.context) 
+      path_query 
+      (algebra : 'b Pathexpr.nested_algebra) 
+      symbol_pairs 
+      (transition_to_formula : 'b -> 'a Syntax.formula) 
+      formula_to_transition : 'b weight_query = 
+    let weight_query = mk_weight_query path_query algebra in 
+    let rg = path_query.recgraph in 
+    let cut_path_graph = cut_graph (path_graph rg) 
+      (path_query.src :: (M.fold (fun (e1, e2) (c1, c2) acc -> [e1;e2;c1;c2] @ acc) (call_edges rg) [])
+        |> List.fold_left (fun acc item -> if List.mem item acc then acc else item :: acc) []) in 
+    let cut_path_graph = fold_edges (fun (v1, e, v2) g -> 
+      if not (M.mem (v1, v2) (call_edges rg) && Syntax.is_false (Pathexpr.eval ~algebra e |> transition_to_formula))
+         then (remove_edge g v1 v2) else g) cut_path_graph cut_path_graph 
+    in 
+    let cfg = wg_to_cfg cut_path_graph path_query.src (call_edges rg) in
+
+    let global_tf = fold_edges (fun (v1, e, v2) tf -> 
+        if M.mem (v1, v2) (call_edges rg) then tf else 
+          M.add (v1, v2) (Pathexpr.eval ~algebra e |> transition_to_formula) tf
+          ) cut_path_graph M.empty in 
+
+    let summarize call : 'b = 
+      let local_cfg = CFG.set_start cfg call |> CFG.prune in 
+      let reachable = CFG.terminals cfg in 
+      if List.length reachable = 0 then (algebra `One) else
+      let tf = M.filter (fun e _ -> List.mem e reachable) global_tf in 
+      let (simulation, vasr_refl) = Vasrabstract.genVASR context symbol_pairs tf in
+      let int_cfg = interval_grammar local_cfg (Vasrabstract.dim vasr_refl) in 
+      let varmap = Memo.memo (fun e -> Syntax.mk_symbol ~name:(IntTriple.show e) context `TyInt |> Syntax.mk_const context) in 
+      let callmap = Memo.memo (fun e -> Syntax.mk_symbol ~name:(IntQuad.show e) context `TyInt |> Syntax.mk_const context) in 
+      let supp_var_map, supp_constr = Vasrabstract.get_supp_var_map context vasr_refl varmap reachable in 
+      Syntax.mk_and context [
+        ICFG.parikh context int_cfg varmap callmap;
+        Vasrabstract.transition context symbol_pairs supp_var_map vasr_refl simulation;
+        Vasrabstract.well_formed context supp_var_map vasr_refl;
+        supp_constr
+      ] |> formula_to_transition
+    in 
+    M.iter (fun _ call -> set_summary weight_query call (summarize call)) (call_edges rg);
     weight_query
 
   let empty () =

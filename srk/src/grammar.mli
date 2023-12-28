@@ -17,10 +17,13 @@ module MakeCFG (N : Symbol) (T : Symbol) : (sig
   val add_production: t -> nonterminal -> gsymbol list -> t
   val nonterminals: t -> nonterminal list 
   val terminals: t -> terminal list 
+  val fold_prods: (nonterminal -> gsymbol list -> 'a -> 'a) -> t -> 'a -> 'a
+  val get_start: t -> nonterminal
   val set_start: t -> nonterminal -> t
   val prune: t -> t
   val compress: t -> nonterminal list -> t
   val parikh: 'a Syntax.context -> t -> (terminal -> 'a Syntax.arith_term) -> (nonterminal -> 'a Syntax.arith_term) -> 'a Syntax.formula 
+  val bounded_production_size : t -> bool
   val weak_labeled: t -> (int -> nonterminal -> nonterminal) -> (int -> terminal -> terminal) -> (int -> int -> int) -> int -> t
   val duplicate_terminals: t -> (terminal -> terminal list) -> t
   val pp: Format.formatter -> t -> unit

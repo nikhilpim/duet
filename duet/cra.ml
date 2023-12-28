@@ -28,6 +28,10 @@ let termination_phase_analysis = ref true
 let precondition = ref false
 let termination_attractor = ref true
 let termination_prenex = ref true
+let vasr_sum = ref false
+let lossy = ref false
+let ind_bounds = ref false
+let split_disjuncts = ref false
 
 let dump_goal loc path_condition =
   if !dump_goals then begin
@@ -680,16 +684,15 @@ let make_transition_system rg =
   in
   (ts, !assertions)
 
-let _mk_iterative_query ts entry =
-  TS.mk_query ts entry
-    (if !monotone then
-       (module MonotoneDom)
-     else
-       (module TransitionDom))
 
 let mk_query ts entry =
-  TS.mk_cfg_query ts entry
-      
+  if !vasr_sum 
+    then (TS.mk_cfg_query ts entry ~lossy:!lossy ~split_disjuncts:!split_disjuncts ~ind_bounds:!ind_bounds)
+    else TS.mk_query ts entry
+      (if !monotone then
+          (module MonotoneDom)
+        else
+          (module TransitionDom))
 let analyze file =
   populate_offset_table file;
   match file.entry_points with
@@ -1157,7 +1160,27 @@ let _ =
   CmdLine.register_config
     ("-precondition",
      Arg.Clear precondition,
-     " Synthesize mortal preconditions")
+     " Synthesize mortal preconditions");
+  CmdLine.register_config
+    ("-vasr_sum",
+    Arg.Unit (fun () ->
+        vasr_sum := true),
+    "Use vasr abstraction to summarize procedures");
+  CmdLine.register_config
+    ("-lvasr-sum",
+    Arg.Unit (fun () ->
+        vasr_sum := true; lossy := true),
+    "Use lossy vasr abstraction to summarize procedures");
+  CmdLine.register_config
+    ("-vasr-split-disjuncts",
+    Arg.Unit (fun () ->
+        split_disjuncts := true),
+    "Split transition formulas by direction of variable change");
+    CmdLine.register_config
+    ("-with-bounds",
+    Arg.Unit (fun () ->
+        ind_bounds := true),
+    "Generate inductive upper and lower potentials and apply constraints to vasr summaries")
 
 let _ =
   CmdLine.register_pass
