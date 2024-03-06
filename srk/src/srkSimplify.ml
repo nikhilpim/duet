@@ -113,7 +113,7 @@ let simplify_term srk term =
   in
   RationalTerm.term_of ctx result
 
-let simplify_terms_rewriter srk : 'a Syntax.rewriter =
+let simplify_terms_rewriter srk : ('a, typ_fo) Syntax.rewriter =
   let ctx = RationalTerm.mk_context srk in
   fun expr ->
     match destruct srk expr with
@@ -231,7 +231,7 @@ let partition_implicant implicant =
 
 let simplify_conjunction srk cube =
   let cube = List.map (simplify_terms srk) cube in
-  let solver = SrkZ3.mk_solver srk in
+  let solver = SrkZ3.Solver.make srk in
   let indicator_map =
     List.fold_left (fun m prop ->
         Symbol.Map.add (mk_symbol srk `TyBool) prop m)
@@ -315,7 +315,7 @@ let isolate_linear srk x term =
   with Nonlinear -> None
 
 let simplify_dda srk phi =
-  let solver = Smt.mk_solver srk in
+  let solver = Smt.Solver.make srk in
   let rec simplify_children star children =
     let changed = ref false in
     let rec go simplified = function
@@ -346,14 +346,14 @@ let simplify_dda srk phi =
       Smt.Solver.push solver;
       Smt.Solver.add solver [phi];
       let simplified =
-        match Smt.Solver.check solver [] with
+        match Smt.Solver.check solver with
         | `Unknown -> phi
         | `Unsat -> mk_false srk
         | `Sat ->
           Smt.Solver.pop solver 1;
           Smt.Solver.push solver;
           Smt.Solver.add solver [mk_not srk phi];
-          match Smt.Solver.check solver [] with
+          match Smt.Solver.check solver with
           | `Unknown -> phi
           | `Unsat -> mk_true srk
           | `Sat -> phi
@@ -559,3 +559,37 @@ let simplify_integer_atom srk op s t =
 
       | _ -> `CompareZero (`Lt, snd (zz_linterm s))
     end
+
+let purify_expr srk filter ?(label=fun _ -> "") =
+  let table = Expr.HT.create 991 in
+  let rewriter srk table =
+    fun expr ->
+    if filter expr then
+      let sym =
+        try
+          Expr.HT.find table expr
+        with Not_found ->
+          let sym = mk_symbol srk ~name:(label expr) (expr_typ srk expr) in
+          Expr.HT.add table expr sym;
+          sym
+      in
+      mk_const srk sym
+    else
+      expr
+  in
+  fun expr ->
+  let expr' = rewrite srk ~up:(rewriter srk table) expr in
+  let map =
+    BatEnum.fold
+      (fun map (term, sym) -> Symbol.Map.add sym term map)
+      Symbol.Map.empty
+      (Expr.HT.enum table)
+  in
+  (expr', map)
+
+let propositionalize srk =
+  purify_expr srk (fun expr ->
+      match destruct srk expr with
+      | `Atom _atom -> true
+      | _ -> false)
+    ~label:(fun _ -> "prop_atom")

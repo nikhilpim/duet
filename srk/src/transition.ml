@@ -208,6 +208,7 @@ let to_transition_formula tr =
   let star tr =
     let (module D) = !domain in
     let tf = to_transition_formula tr in
+    logf ~level:`warn "Approximating transitive closure:@.  @[<v 0>%a@]" pp tr;
     let iter = D.abstract srk tf in
     let tr_symbols = TransitionFormula.symbols tf in
     let transform =
@@ -224,6 +225,7 @@ let to_transition_formula tr =
       mk_and srk [D.exp srk tr_symbols loop_counter iter;
                   mk_leq srk (mk_real srk QQ.zero) loop_counter]
     in
+    logf ~level:`warn "Approx TC:@.  @[<v 0>%a@]" (Formula.pp srk) closure;
     { transform = transform;
       guard = closure }
 
@@ -409,13 +411,14 @@ let to_transition_formula tr =
       List.iter (fun (k, v) -> Hashtbl.add subscript_tbl k v) ss;
       mk_and srk phis
     in
-    let solver = Smt.mk_solver srk in
+    let module Solver = Smt.StdSolver in
+    let solver = Solver.make srk in
     List.iter2 (fun tr guard ->
-        Smt.Solver.add solver [to_ss_formula tr guard])
+        Solver.add solver [to_ss_formula tr guard])
       trs
       guards;
-    Smt.Solver.add solver [substitute_const srk subscript (mk_not srk post)];
-    match Smt.Solver.get_unsat_core solver indicators with
+    Solver.add solver [substitute_const srk subscript (mk_not srk post)];
+    match Solver.get_unsat_core solver indicators with
     | `Sat -> `Invalid
     | `Unknown -> `Unknown
     | `Unsat core ->
@@ -506,7 +509,7 @@ let to_transition_formula tr =
                 :: (tr_subst tr.guard)
                 :: transform_formula)
     |> Nonlinear.linearize srk
-    |> rewrite srk ~down:(nnf_rewriter srk)
+    |> rewrite srk ~down:(pos_rewriter srk)
     |> Abstract.abstract ~exists srk man
 
   let linearize tr =

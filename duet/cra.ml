@@ -20,6 +20,8 @@ let forward_inv_gen = ref true
 let forward_pred_abs = ref false
 let dump_goals = ref false
 let monotone = ref false
+let prsd = ref false
+let cra_refine = ref false
 let nb_goals = ref 0
 let termination_exp = ref true
 let termination_llrf = ref true
@@ -133,7 +135,8 @@ module V = struct
 end
 
 module K = struct
-  include Transition.Make(Ctx)(V)
+  module Tr = Transition.Make(Ctx)(V)
+  include Tr
 
   let add x y =
     if is_zero x then y
@@ -145,6 +148,74 @@ module K = struct
     else if is_one x then y
     else if is_one y then x
     else mul x y
+
+  (*
+  let mul x y = Log.time "refine" mul x y
+  let add x y = Log.time "refine" add x y
+  *)
+
+  module CRARefinement = Refinement.DomainRefinement
+      (struct
+        include Tr
+        let is_zero a = ((Smt.is_sat srk (guard a)) == `Unsat)
+      end)
+
+  let to_dnf x =
+    let open Syntax in
+    let guard =
+      rewrite srk
+        ~down:(pos_rewriter srk)
+        (guard x)
+    in
+    let (x_tr, guard, rhs_symbols) =
+      BatEnum.fold (fun (x_tr, guard, rhs_symbols) (v, rhs) ->
+          let fresh_sym = mk_symbol srk (expr_typ srk rhs) in
+          let fresh_rhs = mk_const srk fresh_sym in
+          ((v, fresh_rhs)::x_tr,
+           (mk_eq srk fresh_rhs rhs)::guard,
+           Symbol.Set.add fresh_sym rhs_symbols))
+        ([], [guard], Symbol.Set.empty)
+        (transform x)
+    in
+    let guard = mk_and srk guard in
+    let solver = LirrSolver.Solver.make srk in
+    let project x =
+      match V.of_symbol x with
+      | Some _ -> true
+      | None -> Symbol.Set.mem x rhs_symbols
+    in
+    LirrSolver.Solver.add solver [guard];
+    let rec split disjuncts =
+      match LirrSolver.Solver.get_model solver with
+      | `Unknown -> [x]
+      | `Unsat -> disjuncts
+      | `Sat m ->
+        let term_of_dim dim = mk_const srk (symbol_of_int dim) in
+        let disjunct =
+          PolynomialCone.project (LirrSolver.Model.nonnegative_cone m)
+            (project % symbol_of_int)
+          |> PolynomialCone.to_formula srk term_of_dim
+        in
+        LirrSolver.Solver.add solver [mk_not srk disjunct];
+        split ((construct disjunct x_tr)::disjuncts)
+    in
+    split []
+
+  let refine_star x =
+    let x_dnf = Log.time "cra:to_dnf" to_dnf x in
+    if (List.length x_dnf) = 1 then star (List.hd x_dnf)
+    else 
+      let pp_list f = List.iteri (fun i p -> Format.fprintf f "Path %d : @[%a@]@." i pp p) in
+      log_pp ~level:`warn pp_list x_dnf;
+      CRARefinement.refinement x_dnf
+
+  let star x = 
+    if (!cra_refine) then 
+      Log.time "cra:refine_star" refine_star x
+    else 
+      Log.time "cra:star" star x
+
+  let project = exists V.is_global
 end
 
 type ptr_term =
@@ -156,13 +227,30 @@ type term =
   | TInt of Ctx.arith_term
   | TPointer of ptr_term
 
+let mk_mod_c99 left right =
+  let zero = Ctx.mk_real QQ.zero in
+  let pos t =
+    (* Redundant encoding is robust under negation w.r.t. LIRR *)
+    Ctx.mk_and [Ctx.mk_leq zero t
+               ; Ctx.mk_not (Ctx.mk_lt t zero)]
+  in
+  let m = Ctx.mk_mod left right in
+  Ctx.mk_ite
+    (pos left)
+    m
+    (Ctx.mk_ite
+       (pos right)
+       (Ctx.mk_sub m right)
+       (Ctx.mk_add [m; right]))
+
 let int_binop op left right =
   match op with
   | Add -> Ctx.mk_add [left; right]
   | Minus -> Ctx.mk_sub left right
   | Mult -> Ctx.mk_mul [left; right]
-  | Div -> Ctx.mk_idiv left right
-  | Mod -> Ctx.mk_mod left right
+  | Div ->
+    Ctx.mk_div (Ctx.mk_sub left (mk_mod_c99 left right)) right
+  | Mod -> mk_mod_c99 left right
   | _ -> Ctx.mk_const (Ctx.mk_symbol ~name:"havoc" `TyInt)
 
 let term_binop op left right = match left, op, right with
@@ -247,15 +335,95 @@ and tr_bexpr bexpr =
   let alg = function
     | Core.OAnd (a, b) -> Ctx.mk_and [a; b]
     | Core.OOr (a, b) -> Ctx.mk_or [a; b]
-    | Core.OAtom (pred, x, y) ->
-      let x = tr_expr_val x in
-      let y = tr_expr_val y in
+    | Core.OAtom (pred, rx, ry) ->
+      let x = tr_expr_val rx in
+      let y = tr_expr_val ry in
       begin
         match pred with
-        | Lt -> Ctx.mk_lt x y
+        | Lt ->
+          begin
+            let t1 = (Core.resolve_type (Core.Aexpr.get_type rx)) in
+            let t2 = (Core.resolve_type (Core.Aexpr.get_type ry)) in
+            match t1, t2 with
+            | Core.Int _, Core.Int _ ->
+              Ctx.mk_leq (Ctx.mk_add [x; (Ctx.mk_int 1)]) y
+            | _, _ ->
+              Ctx.mk_lt x y
+          end
         | Le -> Ctx.mk_leq x y
-        | Eq -> Ctx.mk_eq x y
-        | Ne -> Ctx.mk_not (Ctx.mk_eq x y)
+        | Eq ->
+          begin
+            match rx, ry with
+            | (BinaryOp (a, Mod, b, _), Constant (CInt (k, _))) ->
+              (* a mod b = k <==> (a - k)/b is an integer (+ sign constraints) *)
+              let ta = tr_expr_val a in
+              let tb = tr_expr_val b in
+              let sign_constraint =
+                if k >= 0 then
+                  Syntax.mk_iff Ctx.context
+                    (Ctx.mk_leq (Ctx.mk_int 0) ta)
+                    (Ctx.mk_leq (Ctx.mk_int 0) tb)
+                else
+                  Syntax.mk_iff Ctx.context
+                    (Ctx.mk_leq ta (Ctx.mk_int 0))
+                    (Ctx.mk_leq (Ctx.mk_int 0) tb)
+              in
+              (Ctx.mk_and
+                 [(Ctx.mk_div (Ctx.mk_sub ta (Ctx.mk_int k)) tb)
+                  |> Ctx.mk_is_int
+                 ; sign_constraint])
+            | _ ->
+              Ctx.mk_eq x y
+          end
+        | Ne ->
+          begin
+            match rx, ry with
+            | (BinaryOp (a, Mod, b, _), Constant (CInt (k, _))) ->
+              (* a mod b != k <==> (a + r - k)/b is an integer for some 1 <= r
+                 <= |b|-1 or k has the wrong sign (positive when signs of a/b
+                 are the different, or negative when they are the same *)
+              let ta = tr_expr_val a in
+              let tb = tr_expr_val b in
+              let r = nondet_const "rem" `TyInt in
+              begin
+                if k >= 0 then
+                  Ctx.mk_or
+                    [Syntax.mk_iff Ctx.context
+                       (Ctx.mk_leq ta (Ctx.mk_int 0))
+                       (Ctx.mk_leq (Ctx.mk_int 0) tb)
+                    ; Ctx.mk_and
+                        [ Ctx.mk_leq (Ctx.mk_int 0) r
+                        ; Ctx.mk_or [ Ctx.mk_leq r (Ctx.mk_int (k-1))
+                                    ; Ctx.mk_leq (Ctx.mk_int (k+1)) r]
+                        ; Ctx.mk_or [ Ctx.mk_leq r (Ctx.mk_sub tb (Ctx.mk_int 1))
+                                    ; Ctx.mk_leq r (Ctx.mk_sub (Ctx.mk_int 1) tb)]
+                        ; Ctx.mk_is_int (Ctx.mk_div (Ctx.mk_sub ta r) tb)]]
+                else
+                  Ctx.mk_or
+                    [Syntax.mk_iff Ctx.context
+                       (Ctx.mk_leq (Ctx.mk_int 0) ta)
+                       (Ctx.mk_leq (Ctx.mk_int 0) tb)
+                    ; Ctx.mk_and
+                        [ Ctx.mk_leq r (Ctx.mk_int 0)
+                        ; Ctx.mk_or [ Ctx.mk_leq r (Ctx.mk_int (k-1))
+                                    ; Ctx.mk_leq (Ctx.mk_int (k+1)) r]
+                        ; Ctx.mk_or [ Ctx.mk_leq (Ctx.mk_sub tb (Ctx.mk_int 1)) r
+                                    ; Ctx.mk_leq (Ctx.mk_sub (Ctx.mk_int 1) tb) r]
+                        ; Ctx.mk_is_int (Ctx.mk_div (Ctx.mk_add [ta; r]) tb)]]
+              end
+            | _ ->
+              begin
+                let t1 = (Core.resolve_type (Core.Aexpr.get_type rx)) in
+                let t2 = (Core.resolve_type (Core.Aexpr.get_type ry)) in
+                match t1, t2 with
+                | Core.Int _, Core.Int _ ->
+                  Ctx.mk_or [Ctx.mk_leq (Ctx.mk_add [x; (Ctx.mk_int 1)]) y;
+                             Ctx.mk_leq (Ctx.mk_add [y; (Ctx.mk_int 1)]) x]
+                | _, _ ->
+
+                  Ctx.mk_or [Ctx.mk_lt x y; Ctx.mk_lt y x]
+              end
+          end
       end
   in
   Bexpr.fold alg bexpr
@@ -481,9 +649,10 @@ module MonotoneDom = struct
 
   let abstract tr =
     let tf = TF.linearize srk (K.to_transition_formula tr) in
+    let abs_solver = Abstract.Solver.make srk (TF.formula tf) in
     let coordinates = coordinates_of (TF.symbols tf) in
     let aff =
-      Abstract.vanishing_space srk (TF.formula tf) coordinates
+      Abstract.LinearSpan.abstract abs_solver coordinates
     in
     let signs =
       let deltas =
@@ -493,7 +662,7 @@ module MonotoneDom = struct
           (TF.symbols tf)
       in
       let vars = BatArray.to_list coordinates in
-      Sign.abstract srk (TF.formula tf) (vars@deltas)
+      Abstract.Sign.abstract abs_solver (vars@deltas)
     in
     (TF.symbols tf, signs, aff)
 
@@ -574,15 +743,13 @@ module TSDisplay = ExtGraph.Display.MakeLabeled
         | Call (s,t) -> Format.fprintf formatter "call(%d, %d)" s t
     end)
 
-module SA = Abstract.MakeAbstractRSY(Ctx)
-
 let decorate_transition_system predicates ts entry =
-  let module AbsDom =
-    TS.ProductIncr
-      (TS.ProductIncr(TS.LiftIncr(SA.Sign))(TS.LiftIncr(SA.AffineRelation)))
-      (TS.LiftIncr(SA.PredicateAbs(struct let universe = predicates end)))
+  let abstract_domain =
+    TS.product
+      (TS.product TS.sign TS.affine_relation)
+      (TS.predicate_abs predicates)
   in
-  let inv = TS.forward_invariants (module AbsDom) ts entry in
+  let inv = TS.forward_invariants abstract_domain ts entry in
   let member varset sym =
     match V.of_symbol sym with
     | Some v -> TS.VarSet.mem v varset
@@ -591,7 +758,9 @@ let decorate_transition_system predicates ts entry =
   TS.loop_headers_live ts
   |> List.fold_left (fun ts (v, live) ->
       let fresh_id = (Def.mk (Assume Bexpr.ktrue)).did in
-      let invariant = AbsDom.formula_of (AbsDom.exists (member live) (inv v)) in
+      let invariant =
+        abstract_domain.formula_of (abstract_domain.exists (member live) (inv v))
+      in
       logf "Found invariant at %d:@;%a" v (Syntax.Formula.pp srk) invariant;
       WG.split_vertex ts v (Weight (K.assume invariant)) fresh_id)
     ts
@@ -700,7 +869,6 @@ let analyze file =
       let rg = Interproc.make_recgraph file in
       let entry = (RG.block_entry rg main).did in
       let (ts, assertions) = make_transition_system rg in
-
       (*TSDisplay.display ts;*)
       let query = mk_query ts entry in
       assertions |> SrkUtil.Int.Map.iter (fun v (phi, loc, msg) ->
@@ -719,12 +887,24 @@ let analyze file =
           logf "Path condition:@\n%a"
             (Syntax.pp_smtlib2 Ctx.context) path_condition;
           dump_goal loc path_condition;
-          match Wedge.is_sat Ctx.context path_condition with
-          | `Sat -> Report.log_error loc msg
-          | `Unsat -> Report.log_safe ()
-          | `Unknown ->
-            logf ~level:`warn "Z3 inconclusive";
-            Report.log_error loc msg);
+          if !monotone then
+            begin
+              match Smt.is_sat Ctx.context path_condition with
+              | `Sat -> Report.log_error loc msg
+              | `Unsat -> Report.log_safe ()
+              | `Unknown ->
+                logf ~level:`warn "Z3 inconclusive";
+                Report.log_error loc msg;
+            end
+          else
+            begin
+              match Wedge.is_sat Ctx.context path_condition with
+              | `Sat -> Report.log_error loc msg
+              | `Unsat -> Report.log_safe ()
+              | `Unknown ->
+                logf ~level:`warn "Z3 inconclusive";
+                Report.log_error loc msg
+            end);
 
       Report.print_errors ();
       Report.print_safe ();
@@ -893,7 +1073,7 @@ let omega_algebra = function
 (* Raise universal quantifiers to top-level.  *)
 let lift_universals srk phi =
   let open Syntax in
-  let phi = rewrite srk ~down:(nnf_rewriter srk) phi in
+  let phi = rewrite srk ~down:(pos_rewriter srk) phi in
   let rec quantify_universals (nb, phi) =
     if nb > 0 then
       quantify_universals (nb - 1, mk_forall srk `TyInt phi)
@@ -907,6 +1087,7 @@ let lift_universals srk phi =
     | `Atom (`Arith (`Lt, x, y)) -> (0, mk_lt srk x y)
     | `Atom (`Arith (`Leq, x, y)) -> (0, mk_leq srk x y)
     | `Atom (`ArrEq (a, b)) -> (0, mk_arr_eq srk a b)
+    | `Atom (`IsInt x) -> (0, mk_is_int srk x)
     | `And conjuncts ->
        let max_nb = List.fold_left max 0 (List.map fst conjuncts) in
        let shift_conjuncts =
@@ -1104,6 +1285,14 @@ let _ =
          K.domain := (module ProductWedge(SolvablePolynomialPeriodicRational)(WedgeGuard))),
      " Use periodic rational spectral decomposition");
   CmdLine.register_config
+    ("-cra-refine",
+     Arg.Set cra_refine,
+     " Turn on loop refinement");
+  CmdLine.register_config
+    ("-cra-refine-full",
+    Arg.Unit (fun () -> cra_refine := true; K.CRARefinement.refine_full := true),
+    " Turn on unrestricted loop refinement");
+  CmdLine.register_config
     ("-cra-vas",
      Arg.Unit (fun () ->
          let open Iteration in
@@ -1134,6 +1323,34 @@ let _ =
          K.domain := (module Product(LossyTranslation)(PolyhedronGuard))),
      " Disable non-monotone analysis features");
   CmdLine.register_config
+    ("-lirr",
+     Arg.Unit (fun () ->
+         let open Iteration in
+         monotone := true;
+         K.domain := (module Product(LIRR)(LIRRGuard))),
+     " Use weak arithmetic theory");
+  CmdLine.register_config
+    ("-lirr-sp",
+     Arg.Unit (fun () ->
+         let open Iteration in
+         monotone := true;
+         K.domain := (module Product(Product(SolvablePolynomial.SolvablePolynomialLIRR)(LIRRGuard))(LIRR))),
+     " Use weak arithmetic theory with solvable polynomial maps");
+  CmdLine.register_config
+    ("-lirr-usp",
+     Arg.Unit (fun () ->
+        let open Iteration in
+        monotone := true;
+        K.domain := (module Product(Product(SolvablePolynomial.UltSolvablePolynomialLIRR)(LIRRGuard))(LIRR))),
+    " Use weak arithmetic theory with ultimately solvable polynomial maps");
+  CmdLine.register_config
+    ("-lirr-sp-quad",
+     Arg.Unit (fun () ->
+        let open Iteration in
+        monotone := true;
+        K.domain := (module Product(SolvablePolynomial.UltSolvablePolynomialLIRR)(Product(Product(SolvablePolynomial.SolvablePolynomialLIRRQuadratic)(LIRRGuard))(LIRR)))),
+    " Use weak arithmetic theory with solvable polynomial maps using quadratic simulations");
+  CmdLine.register_config
     ("-termination-no-exp",
      Arg.Clear termination_exp,
      " Disable exp-based termination analysis");
@@ -1161,6 +1378,13 @@ let _ =
     ("-precondition",
      Arg.Clear precondition,
      " Synthesize mortal preconditions");
+  CmdLine.register_config
+    ("-theory",
+     Arg.String (function
+         | "LIRA" -> Syntax.set_theory srk `LIRA;
+         | "LIRR" -> Syntax.set_theory srk `LIRR
+         | th -> failwith ("Unrecognized theory: " ^ th)),
+     " Set background theory (LIRA, LIRR)");
   CmdLine.register_config
     ("-vasr-sum",
     Arg.Unit (fun () ->

@@ -40,6 +40,73 @@ module type Domain = sig
   val tr_symbols : 'a t -> (symbol * symbol) list
 end
 
+module LIRR = struct
+  type 'a t = 'a TF.t
+
+  let pp srk _ formatter tf = let f = TF.formula tf in Formula.pp srk formatter f
+
+  let abstract _ tf = tf
+
+  let exp = LirrInvariants.compute_LIRR_invariants
+
+end
+
+module LIRRGuard = struct
+  type 'a t =
+    { precondition : PolynomialCone.t;
+      postcondition : PolynomialCone.t }
+
+  let pp _ _ _ _ =
+    ()
+    (* Format.fprintf formatter "pre:@;  @[<v 0>%a@]@;post:@;  @[<v 0>%a@]" *)
+    (*   PolynomialCone.pp iter.precondition *)
+    (*   PolynomialCone.pp iter.postcondition *)
+
+  let abstract srk tf =
+    let post_symbols = TF.post_symbols (TF.symbols tf) in
+    let pre_symbols = TF.pre_symbols (TF.symbols tf) in
+    let precondition =
+      let exists x =
+        TF.exists tf x && not (Symbol.Set.mem x post_symbols)
+      in
+      LirrSolver.find_consequences srk (mk_exists_consts srk exists (TF.formula tf))
+    in
+    let postcondition =
+      let exists x =
+        TF.exists tf x && not (Symbol.Set.mem x pre_symbols)
+      in
+      LirrSolver.find_consequences srk (mk_exists_consts srk exists (TF.formula tf))
+    in
+    let pp_dim = (fun formatter i ->
+      try Format.fprintf formatter "%a" (pp_symbol srk) (symbol_of_int i)
+      with _ -> Format.fprintf formatter "1")
+  in
+  logf "precondition: %a" (PolynomialCone.pp pp_dim) precondition;
+  logf "postcondition: %a" (PolynomialCone.pp pp_dim) postcondition;
+  { precondition; postcondition }
+
+  let exp srk tr_symbols loop_counter guard =
+    let term_of_dim dim =
+      mk_const srk (symbol_of_int dim)
+    in
+    mk_or srk [mk_and srk [mk_eq srk loop_counter (mk_real srk QQ.zero);
+                           TF.formula (TF.identity srk tr_symbols)];
+               mk_and srk [mk_leq srk (mk_real srk QQ.one) loop_counter;
+                           PolynomialCone.to_formula srk term_of_dim guard.precondition;
+                           PolynomialCone.to_formula srk term_of_dim guard.postcondition]]
+
+  let equal _ _ iter iter' =
+    PolynomialCone.equal iter.precondition iter'.precondition
+    && PolynomialCone.equal iter.postcondition iter'.postcondition
+
+  let join _ _ iter iter' =
+    { precondition = PolynomialCone.intersection iter.precondition iter'.precondition;
+      postcondition = PolynomialCone.intersection iter.postcondition iter'.postcondition }
+
+  let widen _ _ _ _ =
+    failwith "Polynomial cone does not support widening."
+end
+
 module WedgeGuard = struct
   type 'a t =
     { precondition : 'a Wedge.t;
@@ -99,7 +166,7 @@ module PolyhedronGuard = struct
   let abstract srk tf =
     let phi = Nonlinear.linearize srk (TF.formula tf) in
     let phi =
-      rewrite srk ~down:(nnf_rewriter srk) phi
+      rewrite srk ~down:(pos_rewriter srk) phi
     in
     let post_symbols = TF.post_symbols (TF.symbols tf) in
     let pre_symbols = TF.pre_symbols (TF.symbols tf) in
@@ -168,7 +235,7 @@ module LinearGuard = struct
     let phi =
       (TF.formula tf)
       |> rewrite srk ~up:(abstract_presburger_rewriter srk)
-      |> rewrite srk ~down:(nnf_rewriter srk)
+      |> rewrite srk ~down:(pos_rewriter srk)
     in
     let tr_symbols = TF.symbols tf in
     let exists = TF.exists tf in
@@ -360,7 +427,7 @@ module LossyTranslation = struct
   let abstract srk tf =
     let phi =
       TF.formula tf
-      |> rewrite srk ~down:(nnf_rewriter srk)
+      |> rewrite srk ~down:(pos_rewriter srk)
       |> Nonlinear.linearize srk
     in
     let delta =
@@ -628,18 +695,18 @@ module Split (Iter : PreDomain) = struct
         ~up:(Nonlinear.uninterpret_rewriter srk)
         body
     in
-    let solver = Smt.mk_solver srk in
-    Smt.Solver.add solver [uninterp_body];
+    let solver = Smt.StdSolver.make srk in
+    Smt.StdSolver.add solver [uninterp_body];
     let sat_modulo_body psi =
       let psi =
         rewrite srk
           ~up:(Nonlinear.uninterpret_rewriter srk)
           psi
       in
-      Smt.Solver.push solver;
-      Smt.Solver.add solver [psi];
-      let result = Smt.Solver.check solver [] in
-      Smt.Solver.pop solver 1;
+      Smt.StdSolver.push solver;
+      Smt.StdSolver.add solver [psi];
+      let result = Smt.StdSolver.check solver in
+      Smt.StdSolver.pop solver 1;
       result
     in
     let is_split_predicate psi =
@@ -795,12 +862,12 @@ let invariant_transition_predicates srk tf predicates =
     mk_and srk [substitute_const srk subst1 (TF.formula tf);
                 substitute_map srk map (TF.formula tf)]
   in
-  let solver = Smt.mk_solver srk in
+  let solver = Smt.Solver.make srk in
   let models = ref [] in
   Smt.Solver.add solver [seq];
   let is_invariant p =
     let inv = mk_if srk (substitute_map srk map' p) (substitute_map srk map p) in
-    List.for_all (fun m -> Interpretation.evaluate_formula m inv) !models && begin
+    List.for_all (fun m -> Smt.Model.sat m inv) !models && begin
         Smt.Solver.push solver;
         Smt.Solver.add solver [mk_not srk inv];
         match Smt.Solver.get_model solver with
@@ -816,7 +883,7 @@ let invariant_transition_predicates srk tf predicates =
            false
       end
   in
-  if Smt.Solver.check solver [] = `Unsat then
+  if Smt.Solver.check solver = `Unsat then
     []
   else
     List.filter is_invariant predicates
@@ -829,7 +896,7 @@ let invariant_partition srk candidates tf =
       invariant_transition_predicates srk tf candidates
       |> BatArray.of_list
     in
-    let solver = Smt.mk_solver srk in
+    let solver = Smt.Solver.make srk in
     Smt.Solver.add solver [TF.formula tf];
     (* The predicate induce a parition of the transitions of T by
        their valuation of the predicates; find the cells of this
@@ -840,7 +907,7 @@ let invariant_partition srk candidates tf =
       | `Sat m ->
         logf "transition formula SAT, finding cell";
          let cell =
-           Array.map (Interpretation.evaluate_formula m) predicates
+           Array.map (Smt.Model.sat m) predicates
          in
          let new_cell =
           BatList.fold_lefti (
@@ -912,7 +979,7 @@ let phase_graph srk tf candidates algebra =
     mk_and srk [substitute_const srk subst1 (TF.formula tf);
                 substitute_map srk map (TF.formula tf)]
   in
-  let solver = Smt.mk_solver srk in
+  let solver = Smt.Solver.make srk in
   Smt.Solver.add solver [seq];
   let indicators =
     BatArray.mapi (fun ind predicate ->
@@ -956,7 +1023,7 @@ let phase_graph srk tf candidates algebra =
         let cell2_can_follow_cell1 =
           cond_neg_clause@cond_pos_clause@result_neg_clause@result_pos_clause
         in
-        Smt.Solver.check solver cell2_can_follow_cell1 != `Unsat
+        Smt.Solver.check ~assumptions:cell2_can_follow_cell1 solver != `Unsat
       end
   in
 
@@ -1063,7 +1130,7 @@ module InvariantDirection (Iter : PreDomain) = struct
       |> invariant_transition_predicates srk tf
       |> BatArray.of_list
     in
-    let solver = Smt.mk_solver srk in
+    let solver = Smt.Solver.make srk in
     Smt.Solver.add solver [TF.formula tf];
     (* The predicate induce a parition of the transitions of T by
        their valuation of the predicates; find the cells of this
@@ -1073,7 +1140,7 @@ module InvariantDirection (Iter : PreDomain) = struct
       match Smt.Solver.get_model solver with
       | `Sat m ->
          let cell =
-           Array.map (Interpretation.evaluate_formula m) predicates
+           Array.map (Smt.Model.sat m) predicates
          in
          let cell_formula =
            List.mapi (fun i sat ->

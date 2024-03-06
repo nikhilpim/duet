@@ -13,6 +13,7 @@ module VS = BatSet.Make(Linear.QQVector)
 module VM = BatMap.Make(Linear.QQVector)
 module ZZVector = Linear.ZZVector
 module IntSet = SrkUtil.Int.Set
+module Solver = Smt.StdSolver
 
 let substitute_const srk sigma expr =
   let simplify t = of_linterm srk (linterm_of srk t) in
@@ -55,12 +56,6 @@ let coefficient_gcd term =
       | None -> assert false
       | Some zz -> ZZ.gcd zz gcd)
     ZZ.zero
-    (V.enum term)
-
-let common_denominator term =
-  BatEnum.fold (fun den (qq, _) ->
-      ZZ.lcm den (QQ.denominator qq))
-    ZZ.one
     (V.enum term)
 
 let map_arith_atoms srk f phi =
@@ -273,7 +268,7 @@ let normalize srk phi =
       let k = mk_symbol srk ~name (typ :> Syntax.typ) in
       let (qf_pre, psi) = go (Env.push k env) psi in
       ((qt,k)::qf_pre, psi)
-    | _ -> ([], rewrite srk ~down:(nnf_rewriter srk) ~up:(rewriter env) phi)
+    | _ -> ([], rewrite srk ~down:(pos_rewriter srk) ~up:(rewriter env) phi)
   in
   go Env.empty phi
 
@@ -468,7 +463,7 @@ module Skeleton = struct
       begin match QQ.to_zz (evaluate_linterm model vt.term) with
         | None -> assert false
         | Some tv ->
-          ZZ.add (Mpzf.fdiv_q tv vt.divisor) vt.offset
+          ZZ.add (ZZ.fdiv tv vt.divisor) vt.offset
           |> QQ.of_zz
       end
     | MReal t -> evaluate_linterm model t
@@ -492,7 +487,7 @@ module Skeleton = struct
         | Some zz -> zz
       in
       let remainder =
-        Mpzf.fdiv_r term_val vt.divisor
+        ZZ.frem term_val vt.divisor
       in
       let numerator =
         V.add_term (QQ.of_zz (ZZ.negate remainder)) const_dim vt.term
@@ -702,7 +697,7 @@ let select_real_term srk interp x atoms =
   let x_val = Interpretation.real interp x in
   let bound_of_atom atom =
     match Interpretation.destruct_atom srk atom with
-    | `Literal (_, _) 
+    | `Literal (_, _)
     | `ArrEq _ -> (None, None)
     | `ArithComparison (op, s, t) ->
       let t = V.add (linterm_of srk s) (V.negate (linterm_of srk t)) in
@@ -841,16 +836,21 @@ let select_int_term srk interp x atoms =
               else
                 V.negate t
             in
-
             let rhs_val = (* [[floor(numerator / a)]] *)
               match QQ.to_zz (eval numerator) with
-              | Some num -> Mpzf.fdiv_q num a
+              | Some num -> ZZ.fdiv num a
               | None -> assert false
+            in
+            let offset =
+              let diff = ZZ.sub rhs_val x_val in
+              ZZ.sub
+                (ZZ.mul delta (ZZ.fdiv diff delta))
+                diff
             in
             let vt =
               { term = numerator;
                 divisor = a;
-                offset = Mpzf.cdiv_r (ZZ.sub x_val rhs_val) delta }
+                offset = offset }
             in
             let vt_val = evaluate_vt vt in
 
@@ -885,14 +885,19 @@ let select_int_term srk interp x atoms =
             in
             let rhs_val = (* [[floor(numerator / a)]] *)
               match QQ.to_zz (eval numerator) with
-              | Some num -> Mpzf.fdiv_q num a
+              | Some num -> ZZ.fdiv num a
               | None -> assert false
             in
-
+            let offset =
+              let diff = ZZ.sub x_val rhs_val in
+              ZZ.sub
+                diff
+                (ZZ.mul delta (ZZ.fdiv diff delta))
+            in
             let vt =
               { term = numerator;
                 divisor = a;
-                offset = Mpzf.fdiv_r (ZZ.sub x_val rhs_val) delta }
+                offset = offset }
             in
             let vt_val = evaluate_vt vt in
             assert (ZZ.equal (ZZ.modulo (ZZ.sub vt_val x_val) delta) ZZ.zero);
@@ -928,20 +933,20 @@ let select_int_term srk interp x atoms =
       | Some zz -> zz
       | None -> assert false
     in
-    ZZ.add (Mpzf.fdiv_q tval vt.divisor) vt.offset
+    ZZ.add (ZZ.fdiv tval vt.divisor) vt.offset
   in
   match List.fold_left merge `None (List.map bound_of_atom atoms) with
   | `Lower (vt, _) ->
     logf ~level:`trace "Found lower bound: %a < %a"
       (pp_int_virtual_term srk) vt
       (pp_symbol srk) x;
-    assert (ZZ.equal (Mpzf.fdiv_r x_val delta) (Mpzf.fdiv_r (vt_val vt) delta));
+    assert (ZZ.equal (ZZ.frem x_val delta) (ZZ.frem (vt_val vt) delta));
     vt
   | `Upper (vt, _) ->
     logf ~level:`trace "Found upper bound: %a < %a"
       (pp_symbol srk) x
       (pp_int_virtual_term srk) vt;
-    assert (ZZ.equal (Mpzf.fdiv_r x_val delta) (Mpzf.fdiv_r (vt_val vt) delta));
+    assert (ZZ.equal (ZZ.frem x_val delta) (ZZ.frem (vt_val vt) delta));
     vt
   | `None ->
     (* Value of x is irrelevant *)
@@ -980,7 +985,7 @@ let specialize_floor_cube srk model cube =
   let replace_floor expr = match destruct srk expr with
     | `Unop (`Floor, t) ->
        let v = linterm_of srk t in
-       let divisor = common_denominator v in
+       let divisor = V.common_denominator v in
        let qq_divisor = QQ.of_zz divisor in
        let dividend = of_linterm srk (V.scalar_mul qq_divisor v) in
        let remainder =
@@ -1042,12 +1047,12 @@ module CSS = struct
       (* solver for the *negation* of the winning formula for skeleton (unsat
          iff there is a winning SAT strategy for formula which conforms to
          skeleton) *)
-      solver : 'a Smt.Solver.t;
+      solver : 'a Solver.t;
       srk : 'a context;
     }
 
   let reset ctx =
-    Smt.Solver.reset ctx.solver;
+    Solver.reset ctx.solver;
     ctx.skeleton <- Skeleton.SEmpty
 
   let add_path ctx path =
@@ -1057,7 +1062,7 @@ module CSS = struct
       let win =
         Skeleton.path_winning_formula srk path ctx.skeleton ctx.formula
       in
-      Smt.Solver.add ctx.solver [mk_not srk win]
+      Solver.add ctx.solver [mk_not srk win]
     with Redundant_path -> ()
 
   (* Check if a given skeleton is winning.  If not, synthesize a
@@ -1069,7 +1074,7 @@ module CSS = struct
       | Some p -> p
       | None   -> Interpretation.empty ctx.srk
     in
-    match Smt.Solver.get_model ctx.solver with
+    match Solver.get_model ctx.solver with
     | `Unsat ->
       logf "Winning formula is valid";
       `Unsat
@@ -1187,8 +1192,8 @@ module CSS = struct
         let win =
           Skeleton.path_winning_formula srk sat_path skeleton phi
         in
-        let solver = Smt.mk_solver srk in
-        Smt.Solver.add solver [mk_not srk win];
+        let solver = Solver.make srk in
+        Solver.add solver [mk_not srk win];
         { formula = phi;
           not_formula = not_phi;
           skeleton = skeleton;
@@ -1200,8 +1205,8 @@ module CSS = struct
         let win =
           Skeleton.path_winning_formula srk unsat_path skeleton not_phi
         in
-        let solver = Smt.mk_solver srk in
-        Smt.Solver.add solver [mk_not srk win];
+        let solver = Solver.make srk in
+        Solver.add solver [mk_not srk win];
         { formula = not_phi;
           not_formula = phi;
           skeleton = skeleton;
@@ -1293,7 +1298,7 @@ module CSS = struct
       is_sat ()
 
   let _minimize_skeleton param_interp ctx =
-    let solver = Smt.mk_solver ctx.srk in
+    let solver = Solver.make ctx.srk in
     let paths = Skeleton.paths ctx.skeleton in
     let path_guards =
       List.map (fun _ -> mk_const ctx.srk (mk_symbol ctx.srk `TyBool)) paths
@@ -1320,8 +1325,8 @@ module CSS = struct
           | Some x -> x
           | None -> assert false)
     in
-    Smt.Solver.add solver psis;
-    match Smt.Solver.get_unsat_core solver path_guards with
+    Solver.add solver psis;
+    match Solver.get_unsat_core solver path_guards with
     | `Sat -> assert false
     | `Unknown -> assert false
     | `Unsat core ->
@@ -1392,12 +1397,12 @@ let simsat_forward_core srk qf_pre phi =
       let open CSS in
       BatEnum.iter (function
           | (k, `Real qv) ->
-            Smt.Solver.add ctx.solver
+            Solver.add ctx.solver
               [mk_eq srk (mk_const srk k) (mk_real srk qv)]
           | (k, `Bool false) ->
-            Smt.Solver.add ctx.solver [mk_not srk (mk_const srk k)]
+            Solver.add ctx.solver [mk_not srk (mk_const srk k)]
           | (k, `Bool true) ->
-            Smt.Solver.add ctx.solver [mk_const srk k]
+            Solver.add ctx.solver [mk_const srk k]
           | (_, `Fun _) -> ())
         (Interpretation.enum parameter_interp)
     in
@@ -1411,10 +1416,10 @@ let simsat_forward_core srk qf_pre phi =
         { formula = phi;
           not_formula = not_phi;
           skeleton = skeleton;
-          solver = Smt.mk_solver srk;
+          solver = Solver.make srk;
           srk = srk }
       in
-      Smt.Solver.add ctx.solver [mk_not srk win];
+      Solver.add ctx.solver [mk_not srk win];
       assert_param_constraints ctx parameter_interp;
       ctx
     in
@@ -1428,10 +1433,10 @@ let simsat_forward_core srk qf_pre phi =
         { formula = not_phi;
           not_formula = phi;
           skeleton = skeleton;
-          solver = Smt.mk_solver srk;
+          solver = Solver.make srk;
           srk = srk }
       in
-      Smt.Solver.add ctx.solver [mk_not srk win];
+      Solver.add ctx.solver [mk_not srk win];
       assert_param_constraints ctx parameter_interp;
       ctx
     in
@@ -1534,7 +1539,7 @@ let simsat_forward_core srk qf_pre phi =
                 Skeleton.path_winning_formula srk path ctx.skeleton ctx.formula
                 |> Interpretation.substitute param_interp
               in
-              Smt.Solver.add ctx.solver [mk_not srk win]
+              Solver.add ctx.solver [mk_not srk win]
             with Redundant_path -> ()
           in
           List.iter add_path (Skeleton.paths skeleton');
@@ -1639,7 +1644,7 @@ let maximize_feasible srk phi t =
         | None -> ()
         | Some b ->
           CSS.reset unsat_ctx;
-          Smt.Solver.add sat_ctx.CSS.solver [
+          Solver.add sat_ctx.CSS.solver [
             mk_lt srk (mk_const srk objective_skolem) (mk_real srk b)
           ]
       end;
@@ -1731,12 +1736,12 @@ let maximize srk phi t =
 exception Unknown
 let qe_mbp srk phi =
   let (qf_pre, phi) = normalize srk phi in
-  let phi = eliminate_ite srk phi in
+  let phi = lift_ite srk phi in
   let exists x phi =
-    let solver = Smt.mk_solver srk in
+    let solver = Solver.make srk in
     let disjuncts = ref [] in
     let rec loop () =
-      match Smt.Solver.get_model solver with
+      match Solver.get_model solver with
       | `Sat m ->
         let implicant =
           match select_implicant srk m phi with
@@ -1747,12 +1752,12 @@ let qe_mbp srk phi =
         let vt = mbp_virtual_term srk m x implicant in
         let psi = virtual_substitution srk x vt phi in
         disjuncts := psi::(!disjuncts);
-        Smt.Solver.add solver [mk_not srk psi];
+        Solver.add solver [mk_not srk psi];
         loop ()
       | `Unsat -> mk_or srk (!disjuncts)
       | `Unknown -> raise Unknown
     in
-    Smt.Solver.add solver [phi];
+    Solver.add solver [phi];
     loop ()
   in
   List.fold_right
@@ -1789,7 +1794,7 @@ let _orient project eqs =
   let eqs =
     eqs
     |> List.map (fun vec ->
-           let den = common_denominator vec in
+           let den = V.common_denominator vec in
            V.enum vec
            /@ (fun (scalar, dim) ->
              match QQ.to_zz (QQ.mul (QQ.of_zz den) scalar) with
@@ -1840,9 +1845,9 @@ let _orient project eqs =
 
 let mbp ?(dnf=false) srk exists phi =
   let phi =
-    eliminate_ite srk phi
+    lift_ite srk phi
     |> rewrite srk
-         ~down:(nnf_rewriter srk)
+         ~down:(pos_rewriter srk)
          ~up:(SrkSimplify.simplify_terms_rewriter srk)
   in
   let project =
@@ -1854,7 +1859,7 @@ let mbp ?(dnf=false) srk exists phi =
       project
       IntSet.empty
   in
-  let solver = Smt.mk_solver ~theory:"QF_LIA" srk in
+  let solver = Solver.make ~theory:"QF_LIA" srk in
   let disjuncts = ref [] in
   let is_true phi =
     match Formula.destruct srk phi with
@@ -1870,7 +1875,7 @@ let mbp ?(dnf=false) srk exists phi =
     Symbol.Map.add symbol term (Symbol.Map.map subst_symbol subst)
   in
   let rec loop () =
-    match Smt.Solver.get_model solver with
+    match Solver.get_model solver with
     | `Sat interp ->
        let implicant =
          match select_implicant srk interp phi with
@@ -1933,7 +1938,7 @@ let mbp ?(dnf=false) srk exists phi =
                  | Some zz -> zz
                in
                let remainder =
-                 Mpzf.fdiv_r term_val vt.divisor
+                 ZZ.frem term_val vt.divisor
                in
                let numerator =
                  V.add_term (QQ.of_zz (ZZ.negate remainder)) const_dim vt.term
@@ -1981,12 +1986,12 @@ let mbp ?(dnf=false) srk exists phi =
          |> SrkSimplify.simplify_terms srk
        in
        disjuncts := disjunct::(!disjuncts);
-       Smt.Solver.add solver [mk_not srk disjunct];
+       Solver.add solver [mk_not srk disjunct];
        loop ()
     | `Unsat -> mk_or srk (!disjuncts)
     | `Unknown -> raise Unknown
   in
-  Smt.Solver.add solver [phi];
+  Solver.add solver [phi];
   loop ()
 
 let easy_sat srk phi =
@@ -2255,16 +2260,15 @@ let cover_virtual_substitution srk x virtual_term phi =
     map_arith_atoms srk replace_atom phi
 
 let mbp_cover ?(dnf=true) srk exists phi =
-  let phi = eliminate_ite srk phi in
-  let phi = rewrite srk ~down:(nnf_rewriter srk) phi in
+  let phi = lift_ite srk phi in
+  let phi = rewrite srk ~down:(pos_rewriter srk) phi in
   let project =
     Symbol.Set.filter (not % exists) (symbols phi)
   in
-  let phi = eliminate_ite srk phi in
-  let solver = Smt.mk_solver srk in
+  let solver = Solver.make srk in
   let disjuncts = ref [] in
   let rec loop () =
-    match Smt.Solver.get_model solver with
+    match Solver.get_model solver with
     | `Sat m ->
       let implicant =
         match select_implicant srk m phi with
@@ -2285,12 +2289,12 @@ let mbp_cover ?(dnf=true) srk exists phi =
       in
 
       disjuncts := psi::(!disjuncts);
-      Smt.Solver.add solver [mk_not srk psi];
+      Solver.add solver [mk_not srk psi];
       loop ()
     | `Unsat -> mk_or srk (!disjuncts)
     | `Unknown -> raise Unknown
   in
-  Smt.Solver.add solver [phi];
+  Solver.add solver [phi];
   loop ()
 
 let local_project_cube srk exists model cube =

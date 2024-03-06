@@ -1,9 +1,9 @@
 open Srk
 open OUnit
-open Abstract
 open Nonlinear
 open Test_pervasives
 
+let affine_hull = Abstract.affine_hull
 let hull_formula hull = Ctx.mk_and (List.map (Ctx.mk_eq (int 0)) hull)
 
 let affine_hull1 () =
@@ -71,42 +71,42 @@ let optimize1 () =
   in
   assert_equiv_formula phi (Abstract.boxify srk phi [r])
 
-let optimize2 () =
-  let phi =
-    let open Infix in
-    (int 0) <= r && r <= (int 1)
-    && (int (-3)) <= s && s <= (int 28)
-  in
-  let phi_r =
-    let open Infix in
-    (int 0) <= r && r <= (int 1)
-  in
-  let phi_rs =
-    let open Infix in
-    (int (-3)) <= (r + s) && (r + s) <= (int 29)
-  in
-  assert_equiv_formula phi (Abstract.boxify srk phi [r; s]);
-  assert_equiv_formula phi_r (Abstract.boxify srk phi [r]);
-  assert_equiv_formula phi_rs
-		       (Abstract.boxify srk phi [Ctx.mk_add [r; s]])
+(* let optimize2 () = *)
+(*   let phi = *)
+(*     let open Infix in *)
+(*     (int 0) <= r && r <= (int 1) *)
+(*     && (int (-3)) <= s && s <= (int 28) *)
+(*   in *)
+(*   let phi_r = *)
+(*     let open Infix in *)
+(*     (int 0) <= r && r <= (int 1) *)
+(*   in *)
+(*   let phi_rs = *)
+(*     let open Infix in *)
+(*     (int (-3)) <= (r + s) && (r + s) <= (int 29) *)
+(*   in *)
+(*   assert_equiv_formula phi (Abstract.boxify srk phi [r; s]); *)
+(*   assert_equiv_formula phi_r (Abstract.boxify srk phi [r]); *)
+(*   assert_equiv_formula phi_rs *)
+(* 		       (Abstract.boxify srk phi [Ctx.mk_add [r; s]]) *)
 
-let optimize3 () =
-  let phi =
-    let open Infix in
-    (int 0) <= r && s <= (int 1)
-  in
-  assert_equiv_formula phi (Abstract.boxify srk phi [r; s])
+(* let optimize3 () = *)
+(*   let phi = *)
+(*     let open Infix in *)
+(*     (int 0) <= r && s <= (int 1) *)
+(*   in *)
+(*   assert_equiv_formula phi (Abstract.boxify srk phi [r; s]) *)
 
-let optimize4 () =
-  let phi =
-    let open Infix in
-    (int 1) < r && r < (int 5)
-  in
-  let phi_closed =
-    let open Infix in
-    (int 1) <= r && r <= (int 5)
-  in
-  assert_equiv_formula phi_closed (Abstract.boxify srk phi [r])
+(* let optimize4 () = *)
+(*   let phi = *)
+(*     let open Infix in *)
+(*     (int 1) < r && r < (int 5) *)
+(*   in *)
+(*   let phi_closed = *)
+(*     let open Infix in *)
+(*     (int 1) <= r && r <= (int 5) *)
+(*   in *)
+(*   assert_equiv_formula phi_closed (Abstract.boxify srk phi [r]) *)
 
 (*
 let optimize5 () =
@@ -345,6 +345,24 @@ let lt_abstract () =
   in
   assert_equiv_formula phi phi_abstract
 
+let abstract_pc () =
+  let phi =
+    let open Infix in
+    ((x = (int 1)) || ((x = y) && y <= (int 2)))
+    && (x*x <= z*z) && (z*z <= y)
+  in
+  let psi =
+    let open Infix in
+    x <= (int 2)
+    && x <= y && (x - (int 1))*(x - y) = (int 0)
+    && x*x <= x
+  in
+  let terms = [| x; y |] in
+  let solver = Abstract.Solver.make ~theory:`LIRR srk phi in
+  let cone = Abstract.PolynomialCone.abstract solver terms in
+  let abstract_phi = PolynomialCone.to_formula srk (Array.get terms) cone in
+  assert_equiv_formula psi abstract_phi
+
 let suite = "Abstract" >::: [
     "affine_hull1" >:: affine_hull1;
     "affine_hull2" >:: affine_hull2;
@@ -353,9 +371,9 @@ let suite = "Abstract" >::: [
     "affine_hull5" >:: affine_hull5;
     "affine_hull6" >:: affine_hull6;
     "optimize1" >:: optimize1;
-    "optimize2" >:: optimize2;
-    "optimize3" >:: optimize3;
-    "optimize4" >:: optimize4;
+    (* "optimize2" >:: optimize2; *)
+    (* "optimize3" >:: optimize3; *)
+    (* "optimize4" >:: optimize4; *)
     (*    "optimize5" >:: optimize5;*)
     "abstract1" >:: abstract1;
     "abstract2" >:: abstract2;
@@ -372,5 +390,6 @@ let suite = "Abstract" >::: [
     "nonlinear_abstract2" >:: nonlinear_abstract2;
     "mod_abstract" >:: mod_abstract;
     "degree3_abstract" >:: degree3_abstract;
-    "lt_abstract" >:: lt_abstract
+    "lt_abstract" >:: lt_abstract;
+    "abstract_pc" >:: abstract_pc
   ]

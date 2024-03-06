@@ -159,7 +159,8 @@ let ensure_symbols srk =
      ("imul", `TyFun ([`TyReal; `TyReal], `TyInt));
      ("imod", `TyFun ([`TyReal; `TyReal], `TyInt));
      ("pow", (`TyFun ([`TyReal; `TyReal], `TyReal)));
-     ("log", (`TyFun ([`TyReal; `TyReal], `TyReal)))]
+     ("log", (`TyFun ([`TyReal; `TyReal], `TyReal)))
+    ]
 
 let uninterpret_rewriter srk =
   ensure_symbols srk;
@@ -216,7 +217,6 @@ let uninterpret_rewriter srk =
           mk_mul srk [coeff_term; product]
       in
       (term :> ('a,typ_fo) expr)
-
     | _ -> expr
 
 let interpret_rewriter srk =
@@ -229,17 +229,17 @@ let interpret_rewriter srk =
   let to_term expr =
     match Expr.refine srk expr with
     | `ArithTerm t -> t
-    | `ArrTerm _ 
+    | `ArrTerm _
     | `Formula _ -> assert false
   in
   fun expr ->
     match destruct srk expr with
     | `App (func, [x; y]) when func = mul || func = imul ->
-      (mk_mul srk [to_term x; to_term y] :> ('a,typ_fo) expr)
+       (mk_mul srk [to_term x; to_term y] :> ('a,typ_fo) expr)
     | `App (func, [x]) when func = inv ->
-      (mk_div srk (mk_real srk QQ.one) (to_term x) :> ('a,typ_fo) expr)
+       (mk_div srk (mk_real srk QQ.one) (to_term x) :> ('a,typ_fo) expr)
     | `App (func, [x; y]) when func = modulo || func = imodulo ->
-      (mk_mod srk (to_term x) (to_term y) :> ('a,typ_fo) expr)
+       (mk_mod srk (to_term x) (to_term y) :> ('a,typ_fo) expr)
     | _ -> expr
 
 let interpret srk expr =
@@ -397,7 +397,7 @@ let linearize srk phi =
     | `Unknown ->
       logf ~level:`warn "linearize: optimization failed";
       lin_phi
-  end
+    end
 
 let mk_log srk base x =
   let pow = get_named_symbol srk "pow" in

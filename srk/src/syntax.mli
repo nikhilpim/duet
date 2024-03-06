@@ -9,6 +9,16 @@ type 'a context
 (** takes a context and outputs a tuple containing the (# of sexprs, # of symbols, # of named symbols) *)
 val context_stats : 'a context -> (int * int * int)
 
+(** Supported arithmetic theories: Linear Integer/Real Arithmetic, and Linear
+   Integer/Real Rings *)
+type theory = [ `LIRA | `LIRR ]
+
+(** Get default theory of a context *)
+val get_theory : 'a context -> theory
+
+(** Set default theory of a context *)
+val set_theory : 'a context -> theory -> unit
+
 (** Environments are maps whose domain is a set of free variable symbols.
     Typically used to travese quantified formulas. *)
 module Env : sig
@@ -113,6 +123,7 @@ type label =
   | Ite
   | Store
   | Select
+  | IsInt
 
 val compare_expr : ('a,'typ) expr -> ('a,'typ) expr -> int
 val compare_formula : 'a formula -> 'a formula -> int
@@ -135,10 +146,15 @@ val destruct : 'a context -> ('a, 'b) expr -> [
     | `Or of ('a formula) list
     | `Not of ('a formula)
     | `Quantify of [`Exists | `Forall] * string * typ_fo * ('a formula)
-    | `Atom of 
+    | `Atom of
         [ `Arith of [`Eq | `Leq | `Lt] * ('a arith_term) * ('a arith_term)
-        | `ArrEq of 'a arr_term * 'a arr_term ]
+        | `ArrEq of 'a arr_term * 'a arr_term
+        | `IsInt of 'a arith_term ]
     | `Proposition of [ `Var of int
+                      (* NK: Shouldn't this be ('a, typ_fo)?
+                         Also, there are two definitions of `App, although
+                         the other one means an (arithmetic) term.
+                       *)
                       | `App of symbol * (('b, typ_fo) expr) list ]
   ]
 
@@ -202,16 +218,21 @@ val symbols : ('a, 'b) expr -> Symbol.Set.t
 
 (** A rewriter is a function that transforms an expression into another.  {b
     The transformation should preserve types}; if not, [rewrite] will fail. *)
-type 'a rewriter = ('a, typ_fo) expr -> ('a, typ_fo) expr
+(* type 'a rewriter = ('a, typ_fo) expr -> ('a, typ_fo) expr *)
+type ('a, 'b) rewriter = ('a, 'b) expr -> ('a, 'b) expr
 
 (** Rewrite an expression.  The {i down} rewriter is applied to each
     expression going down the expression tree, and the {i up} rewriter is
     applied to each expression going up the tree. *)
-val rewrite : 'a context -> ?down:('a rewriter) -> ?up:('a rewriter) ->
+val rewrite : 'a context -> ?down:(('a, 'b) rewriter) -> ?up:(('a, 'b) rewriter) ->
   ('a, 'typ) expr -> ('a, 'typ) expr
 
 (** Convert to negation normal form ({i down} pass). *)
-val nnf_rewriter : 'a context -> 'a rewriter
+val nnf_rewriter : 'a context -> ('a, typ_fo) rewriter
+
+(** Convert to negation normal form ({i down} pass), and eliminate negated
+   arithmetic propositions. *)
+val pos_rewriter : 'a context -> ('a, typ_fo) rewriter
 
 module Expr : sig
   val equal : ('a,'b) expr -> ('a,'b) expr -> bool
@@ -247,7 +268,7 @@ module Expr : sig
 
   (** Destruct an expression as an s-expression, consisting of a label
      and a list of children. *)
-  val destruct_sexpr : 'a context -> ('a, typ_fo) expr -> label * (('a, typ_fo) expr list)
+  val destruct_sexpr : 'a context -> ('a, 'b) expr -> label * (('a, typ_fo) expr list)
 
   (** Construct an expression from a label and list of children.
      Inverse of [destruct_sexpr]. *)
@@ -433,9 +454,11 @@ type ('a,'b) open_formula = [
   | `Or of 'a list
   | `Not of 'a
   | `Quantify of [`Exists | `Forall] * string * typ_fo * 'a
-  | `Atom of 
+  | `Atom of
       [ `Arith of [`Eq | `Leq | `Lt] * ('b arith_term) * ('b arith_term)
-      | `ArrEq of 'b arr_term * 'b arr_term ]
+      | `ArrEq of 'b arr_term * 'b arr_term
+      | `IsInt of 'b arith_term
+      ]
   | `Proposition of [ `Var of int
                     | `App of symbol * (('b, typ_fo) expr) list ]
   | `Ite of 'a * 'a * 'a
@@ -468,6 +491,8 @@ val mk_leq : 'a context -> 'a arith_term -> 'a arith_term -> 'a formula
 val mk_true : 'a context -> 'a formula
 val mk_false : 'a context -> 'a formula
 
+val mk_is_int : 'a context -> 'a arith_term -> 'a formula
+
 (** This is syntactic sugar for intrinsic array equality *)
 val mk_arr_eq : 'a context -> 'a arr_term -> 'a arr_term -> 'a formula
 
@@ -479,14 +504,36 @@ val is_false : 'a formula -> bool
 val mk_compare : [ `Eq | `Leq | `Lt ] -> 'a context -> 'a arith_term -> 
   'a arith_term -> 'a formula
 
-(** Given a formula [phi], compute an equivalent formula without
-   if-then-else terms.  [eliminate-ite] does not introduce new
-   symbols or quantifiers. *)
+(** Purify all sub-expressions that match the given predicate, i.e., replace
+   each matching expression with a fresh constant of the same type, and return
+   the substitution map sending each such constant to the original
+   expression. Sub-expressions that are equal are associated with the same
+   constant.  *)
+val purify_expr : 'a context ->
+  (('a, 'b) expr -> bool) ->
+  ?label:(('a, 'b) expr -> string) ->
+  ('a, 'c) expr ->
+  (('a, 'c) expr * (('a, 'b) expr) Symbol.Map.t)
+
+(** Given a formula [phi], compute a formula without if-then-else terms that
+   is equivalent to [phi] when projected on to the symbols of [phi].  If an
+   *equivalent* ite-free formula is required, then use [lift_ite]. *)
 val eliminate_ite : 'a context -> 'a formula -> 'a formula
+
+(** Given a formula [phi], compute an equivalent formula without if-then-else
+   terms.  [lift-ite] does not introduce new symbols or quantifiers.
+   [eliminate_ite] should generally be preferred over [lift_ite] in cases
+   where either procedure suffices. *)
+val lift_ite : 'a context -> 'a formula -> 'a formula
 
 (** Given a formula [phi], compute an equivalent formula without
    arr_eq terms. *)
 val eliminate_arr_eq : 'a context -> 'a formula -> 'a formula
+
+(** Given a formula [phi], compute an equivalent formula without floor, mod,
+   or div terms that is equivalent to [phi] when projected on to the symbols
+   of [phi]. *)
+val eliminate_floor_mod_div : 'a context -> 'a formula -> 'a formula
 
 (** Print a formula as a satisfiability query in SMTLIB2 format.
     The query includes function declarations and (check-sat).
@@ -527,8 +574,7 @@ module Formula : sig
   val destruct : 'a context -> 'a formula -> ('a formula, 'a) open_formula
   val construct : 'a context -> ('a formula, 'a) open_formula -> 'a formula
   val eval : 'a context -> (('b, 'a) open_formula -> 'b) -> 'a formula -> 'b
-  val eval_memo : 'a context -> (('b, 'a) open_formula -> 'b) -> 'a formula -> 
-    'b
+  val eval_memo : 'a context -> (('b, 'a) open_formula -> 'b) -> 'a formula -> 'b
   val existential_closure : 'a context -> 'a formula -> 'a formula
   val universal_closure : 'a context -> 'a formula -> 'a formula
   val skolemize_free : 'a context -> 'a formula -> 'a formula
@@ -575,6 +621,7 @@ module type Context = sig
   val mk_arr_eq : arr_term -> arr_term -> formula
   val mk_true : formula
   val mk_false : formula
+  val mk_is_int : arith_term -> formula
   val mk_ite : formula -> (t, 'a) expr -> (t, 'a) expr -> (t, 'a) expr
   val stats : unit -> (int * int * int)
 end
@@ -611,6 +658,8 @@ module Infix (C : sig
   val ( .%[]<- ) : C.t arr_term -> C.t arith_term -> C.t arith_term -> 
     C.t arr_term
   val ( == ) : C.t arr_term -> C.t arr_term -> C.t formula
+
+  val is_int : C.t arith_term -> C.t formula
 end
 
 (** A context table is a hash table mapping contents to values.  If a context

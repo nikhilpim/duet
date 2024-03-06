@@ -9,7 +9,7 @@ module RationalTerm : sig
   val term_of : 'a rt_context -> 'a t -> 'a arith_term
 end
 
-val simplify_terms_rewriter : 'a context -> 'a rewriter
+val simplify_terms_rewriter : 'a context -> ('a, typ_fo) rewriter
 
 val simplify_terms : 'a context -> 'a formula -> 'a formula
 
@@ -62,3 +62,10 @@ val simplify_integer_atom : 'a context -> [`Eq | `Leq | `Lt ] -> 'a arith_term -
                             [ `CompareZero of [ `Eq | `Leq | `Lt ] * Linear.QQVector.t
                             | `Divides of ZZ.t * Linear.QQVector.t
                             | `NotDivides of ZZ.t * Linear.QQVector.t ]
+
+(** Return a propositional skeleton of a formula using fresh variables
+    and a mapping of these variables to the original atoms.
+*)
+val propositionalize : 'a context ->
+                       'a formula ->
+                       ('a formula * (('a,typ_fo) expr) Symbol.Map.t)
