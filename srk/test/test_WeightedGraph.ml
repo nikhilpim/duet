@@ -31,6 +31,8 @@ module V = struct
   let is_global _ = true
   let equal = (=)
   let hash = Hashtbl.hash
+  let fresh name = 
+    register_var name `TyInt; name
 end
 module T = Transition.Make(Ctx)(V)
 module WG = WeightedGraph
@@ -94,7 +96,10 @@ end
 
 let mk_query edges call_edges src =
   TS.mk_query (mk_ts edges call_edges) src (module TransitionDom)
-    
+
+let mk_cfg_query edges call_edges src = 
+ TS.mk_cfg_query (mk_ts edges call_edges) src ~lossy:false ~split_disjuncts:false ~ind_bounds:false
+
 let pe_context = Pathexpr.mk_context ()
 
 let pe_algebra =
@@ -167,6 +172,24 @@ let simple_loop () =
   in
   assert_post path post
 
+let simple_loop_cfg () =
+  let query =
+    let open Infix in
+    mk_cfg_query
+      [(0, T.assign "x" (int 0), 1);
+        (1, T.assume (x < (int 10)), 2);
+        (2, T.assign "x" (x + (int 1)), 1);
+        (1, T.assume ((int 10) <= x), 3)]
+      []
+      0
+  in
+  let path = TS.path_weight query 3 in
+  let post =
+    let open Infix in
+    (x = (int 10))
+  in
+  assert_post path post
+
 let simple_branch () =
   let open Infix in
   let query =
@@ -174,6 +197,20 @@ let simple_branch () =
       [(0, T.assign "x" (int 0), 1);
        (1, T.assign "x" (x + (int 1)), 2);
        (1, T.assign "x" (x - (int 1)), 2)]
+      []
+      0
+  in
+  let path = TS.path_weight query 2 in
+  assert_post path (x <= (int 1));
+  assert_post path ((int (-1)) <= x)
+
+let simple_branch_cfg () =
+  let open Infix in
+  let query =
+    mk_cfg_query
+      [(0, T.assign "x" (int 0), 1);
+        (1, T.assign "x" (x + (int 1)), 2);
+        (1, T.assign "x" (x - (int 1)), 2)]
       []
       0
   in
@@ -203,6 +240,28 @@ let nested_loop () =
   assert_post path (y = (int 50));
   assert_post path (z = (int 5))
 
+let nested_loop_cfg () =
+  let open Infix in
+  let query =
+    mk_cfg_query
+      [(0, T.assign "x" (int 0), 1);
+        (1, T.assign "y" (int 0), 2);
+        (2, T.assume (x < (int 10)), 3);
+        (3, T.assign "z" (int 0), 4);
+        (4, T.assume (z < (int 5)), 5);
+        (5, T.assign "z" (z + (int 1)), 6);
+        (6, T.assign "y" (y + (int 1)), 4);
+        (4, T.assume ((int 5) <= z), 7);
+        (7, T.assign "x" (x + (int 1)), 2);
+        (2, T.assume ((int 10) <= x), 8)]
+      []
+      0
+  in
+  let path = TS.path_weight query 8 in
+  assert_post path (x = (int 10));
+  assert_post path (y = (int 50));
+  assert_post path (z = (int 5))
+
 let nonrec_call () =
   let open Infix in
   let query =
@@ -212,6 +271,43 @@ let nonrec_call () =
        (1, T.assume ((int 10) <= x), 3);
        (10, T.assign "x" (x + (int 1)), 11);
        (10, T.assign "x" (x - (int 1)), 11)]
+      [(2, (10, 11), 1)]
+      0
+  in
+  assert_post (TS.path_weight query 3) (x = (int 10));
+  assert_post (TS.path_weight query 1) (x <= (int 10));
+  assert_not_post (TS.call_weight query (10, 11)) (x <= (int 10));
+  assert_not_post (TS.path_weight query 1) ((int 0) <= x)
+
+let non_rec_call_cfg_mod () =
+  let open Infix in
+  let query =
+    mk_cfg_query
+      [(0, T.assign "x" (int 0), 1);
+        (1, T.assume (x < (int 10)), 2);
+        (1, T.assume ((int 10) <= x), 3);
+        (10, T.assign "x" (x + (int 1)), 11);
+        (10, T.assign "x" (x - (int 1)), 12);
+        (11, T.one, 13);
+        (12, T.one, 13);
+        ]
+      [(2, (10, 13), 1)]
+      0
+  in
+  assert_post (TS.path_weight query 3) (x = (int 10));
+  assert_post (TS.path_weight query 1) (x <= (int 10));
+  assert_not_post (TS.call_weight query (10, 11)) (x <= (int 10));
+  assert_not_post (TS.path_weight query 1) ((int 0) <= x)
+  
+let nonrec_call_cfg () =
+  let open Infix in
+  let query =
+    mk_cfg_query
+      [(0, T.assign "x" (int 0), 1);
+        (1, T.assume (x < (int 10)), 2);
+        (1, T.assume ((int 10) <= x), 3);
+        (10, T.assign "x" (x + (int 1)), 11);
+        (10, T.assign "x" (x - (int 1)), 11)]
       [(2, (10, 11), 1)]
       0
   in
@@ -231,6 +327,22 @@ let recursive () =
        (14, T.assign "y" (y + (int 1)), 12)]
       [(1, (10, 12), 2);
        (13, (10, 12),14)]
+      0
+  in
+  assert_post (TS.path_weight query 2) (x + y = (int 100));
+  assert_not_post (TS.path_weight query 2) (y <= (int 99))
+
+let recursive_cfg () =
+  let open Infix in
+  let query =
+    mk_cfg_query
+      [(0, T.parallel_assign [("x", int 100); ("y", int 0)], 1);
+        (10, T.assume ((int 0) < x), 11);
+        (10, T.assume (x <= (int 0)), 12);
+        (11, T.assign "x" (x - (int 1)), 13);
+        (14, T.assign "y" (y + (int 1)), 12)]
+      [(1, (10, 12), 2);
+        (13, (10, 12),14)]
       0
   in
   assert_post (TS.path_weight query 2) (x + y = (int 100));
@@ -385,9 +497,14 @@ let get_cyclelen query =
 
 let suite = "WeightedGraph" >::: [
     "simple_loop" >:: simple_loop;
+    (* "simple_loop_cfg" >:: simple_loop_cfg; *)
     "simple_branch" >:: simple_branch;
+    (* "simple_branch_cfg" >:: simple_branch_cfg; *)
     "nested_loop" >:: nested_loop;
+    (* "nested_loop_cfg" >:: nested_loop_cfg; *)
     "nonrec_call" >:: nonrec_call;
+    (* "nonrec_call_cfg" >:: nonrec_call_cfg;
+    "non_rec_call_cfg_mod" >:: non_rec_call_cfg_mod; *)
     "recursive" >:: recursive;
     "aff_eq1" >:: aff_eq1;
     "aff_collatz" >:: aff_collatz;

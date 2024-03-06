@@ -205,9 +205,10 @@ module RecGraph : sig
      weights to call edges. *)
   val mk_weight_query : query -> 'a Pathexpr.nested_algebra -> 'a weight_query
 
-  val summarize_vasr : 'a Syntax.context -> query -> 'b Pathexpr.nested_algebra -> 
+  val summarize_vasr : is_lossy:bool -> 'a Syntax.context -> query -> 'b Pathexpr.nested_algebra -> 
                         (Syntax.symbol * Syntax.symbol) list -> ('b -> 'a Syntax.formula)
-                         -> ('a Syntax.formula -> 'b) ->'b weight_query
+                         -> ((Syntax.symbol * Syntax.symbol) list -> 'a Syntax.formula -> 'b)
+                         -> (IntPair.t -> (IntPair.t -> 'a Syntax.arith_term) -> 'a Syntax.formula) ->'b weight_query
 
   (** Build call summaries via successive approximation. *)
   val summarize_iterative : query ->

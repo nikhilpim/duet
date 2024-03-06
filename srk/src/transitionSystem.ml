@@ -52,22 +52,8 @@ module Make
   type tlabel = T.t label
   type query = T.t WG.RecGraph.weight_query
 
-  let mk_cfg_query ts source ~lossy ~split_disjuncts ~ind_bounds = 
-    let module M = BatMap.Make(SrkUtil.IntPair) in 
-    let module Input = struct 
-      let graph = ts
-      let src = source
-      let lossy = lossy
-      let ind_bounds = ind_bounds
-      let split_disjuncts = split_disjuncts
-    end in 
-    let module S = CfgSummarizer.CfgSummarizer(C)(Var)(T)(Input) in
-    let query = WG.RecGraph.mk_query S.rg source in 
-    let wq = WG.RecGraph.mk_weight_query query S.algebra in 
-    M.iter (fun _ call ->
-    WG.RecGraph.set_summary wq call (S.summarize call)) (WG.RecGraph.call_edges S.rg);
-    wq
-  let _mk_cfg_query2 ts source = 
+  let mk_cfg_query ts source ~lossy ~split_disjuncts ~ind_bounds =
+    let is_lossy, _, _ = lossy, split_disjuncts, ind_bounds in  
     let module S = Set.Make(Var) in 
     let rg =
       WG.fold_vertex
@@ -114,14 +100,35 @@ module Make
         | Some var -> (var, Syntax.mk_const C.context post)
         | None -> assert false) transform_symbols
       |> T.construct formula in
-
+    let refinement = if ind_bounds 
+      then (fun summarized_call call_to_term -> 
+          let gen_bounds = Indlinbounds.bounding_model
+          C.context rg algebra symbol_pairs 
+          (fun name -> T.symbol_pair (Var.fresh name))
+          formula_to_transition transition_to_formula in 
+          let upper_bounds = gen_bounds true summarized_call in 
+          let lower_bounds = gen_bounds false summarized_call in 
+          (List.map (fun (bounded_call, (guard, lims)) ->
+            mk_or C.context 
+            [mk_and C.context 
+              (guard :: 
+              (List.map (fun lim -> mk_leq C.context (call_to_term bounded_call) (lim)) lims));
+              mk_leq C.context (call_to_term bounded_call) (mk_zero C.context)]
+            ) upper_bounds) @ 
+          (List.map (fun (bounded_call, (guard, lims)) ->
+            mk_and C.context (guard :: (List.map (fun lim -> mk_leq C.context lim (call_to_term bounded_call)) lims))) lower_bounds )
+          |> mk_and C.context
+        )
+      else (fun _ _ -> Syntax.mk_true C.context) in 
     WG.RecGraph.summarize_vasr
+      ~is_lossy
       C.context
       (WG.RecGraph.mk_query rg source)
       algebra
       symbol_pairs
       transition_to_formula
-      (formula_to_transition symbol_pairs)
+      formula_to_transition
+      refinement
 
   let mk_query ?(delay=1) ts source dom =
     let rg =

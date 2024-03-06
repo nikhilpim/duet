@@ -1162,7 +1162,7 @@ let _ =
      Arg.Clear precondition,
      " Synthesize mortal preconditions");
   CmdLine.register_config
-    ("-vasr_sum",
+    ("-vasr-sum",
     Arg.Unit (fun () ->
         vasr_sum := true),
     "Use vasr abstraction to summarize procedures");

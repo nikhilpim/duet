@@ -860,55 +860,74 @@ module RecGraph = struct
       let cfg = List.fold_left (fun cfg e -> CFG.add_production cfg (e, e) []) cfg nt_ends in
       cfg 
 
-  let interval_grammar (grammar : CFG.t) (dim : int) : ICFG.t = 
+  let interval_grammar (grammar : CFG.t) (interval_param : int) : ICFG.t = 
     assert (CFG.bounded_production_size grammar); 
-    let new_productions = (List.init (dim + 1) (fun i -> 
-        List.init (dim + 1 - i) (fun k ->
-          List.init (dim + 1 - i - k) (fun j -> 
+    let new_productions = (List.init (interval_param + 1) (fun i -> 
+        List.init (interval_param + 1 - i) (fun k ->
+          List.init (interval_param + 1 - i - k) (fun j -> 
             let k = k + i in 
             let j = j + k in 
-            CFG.fold_prods (fun nt gls acc -> ( match gls with 
+            CFG.fold_prods (fun nt gls acc -> ( 
+              let nt' = (2*i + 1, 2*j + 1, (fst nt), (snd nt)) in 
+              match gls with 
               | [N n1; N n2] -> 
-                let nt' = (2*i + 1, 2*j + 1, (fst nt), (snd nt)) in 
                 let n1' = (2 * i + 1, 2 * k + 1, fst n1, snd n1) in
                 let n2' = (2 * k + 1, 2 * j + 1, fst n2, snd n2) in 
                 (nt', [ICFG.N n1'; ICFG.N n2']) :: acc
-                | _ -> acc
+              | [N n1] -> 
+                  let n1' = (2*i + 1, 2*j + 1, fst n1, snd n1) in 
+                  (nt', [ICFG.N n1']) :: acc
+              | [] -> (nt', []) :: acc
+              | _ -> acc
               )) grammar [] 
             ) |> List.flatten
           ) |> List.flatten
       ) |> List.flatten) @
-      (List.init (dim + 1) (fun i -> 
-        List.init (dim + 1 - i) (fun j -> 
+      (List.init (interval_param + 1) (fun i -> 
+        List.init (interval_param + 1 - i) (fun j -> 
+          let j = j + i in 
           List.init (1 + 2 * (j - i)) (fun k ->
-            let j = j + i in 
             let k = 2 * i + 1 + k in 
-            CFG.fold_prods (fun nt gls acc -> (match gls with 
+            CFG.fold_prods (fun nt gls acc -> (
+            let nt' = (2*i + 1, 2*j + 1, fst nt, snd nt) in 
+            match gls with 
             | [T t] -> 
-              let nt' = (2*i + 1, 2*j + 1, fst nt, snd nt) in 
               let t' = k, fst t, snd t in 
               (nt', [ICFG.T t']) :: acc
+            | [T t ; N n1] -> 
+              let t' = k, fst t, snd t in 
+              let n1' = (if k mod 2 == 1 then k else k + 1), 2*j + 1, fst n1, snd n1 in 
+              (nt', [ICFG.T t'; ICFG.N n1']) :: acc
+            | [N n1; T t] -> 
+              let t' = k, fst t, snd t in 
+              let n1' = 2*i + 1, (if k mod 2 == 1 then k else k - 1), fst n1, snd n1 in 
+              (nt', [ICFG.N n1'; ICFG.T t']) :: acc
             | _ -> acc
             )) grammar []
             ) |> List.flatten ) |> List.flatten ) |> List.flatten)
       in 
-    List.fold_left (fun ig (nt, gls) -> ICFG.add_production ig nt gls) (ICFG.empty (1, 2 * dim + 1, fst (CFG.get_start grammar), snd (CFG.get_start grammar))) new_productions
+    List.fold_left (fun ig (nt, gls) -> ICFG.add_production ig nt gls) 
+      (ICFG.empty (1, 2 * interval_param + 1, fst (CFG.get_start grammar), snd (CFG.get_start grammar))) new_productions
     |> ICFG.prune
 
+
   let summarize_vasr 
+      ~is_lossy
       (context : 'a Syntax.context) 
       path_query 
       (algebra : 'b Pathexpr.nested_algebra) 
       symbol_pairs 
       (transition_to_formula : 'b -> 'a Syntax.formula) 
-      formula_to_transition : 'b weight_query = 
+      formula_to_transition 
+      refinement = 
+    (* if is_lossy then print_string "LOSSY" else print_string "NOT LOSSY"; *)
     let weight_query = mk_weight_query path_query algebra in 
     let rg = path_query.recgraph in 
     let cut_path_graph = cut_graph (path_graph rg) 
       (path_query.src :: (M.fold (fun (e1, e2) (c1, c2) acc -> [e1;e2;c1;c2] @ acc) (call_edges rg) [])
         |> List.fold_left (fun acc item -> if List.mem item acc then acc else item :: acc) []) in 
     let cut_path_graph = fold_edges (fun (v1, e, v2) g -> 
-      if not (M.mem (v1, v2) (call_edges rg) && Syntax.is_false (Pathexpr.eval ~algebra e |> transition_to_formula))
+      if not (M.mem (v1, v2) (call_edges rg)) && Syntax.is_false (Pathexpr.eval ~algebra e |> transition_to_formula)
          then (remove_edge g v1 v2) else g) cut_path_graph cut_path_graph 
     in 
     let cfg = wg_to_cfg cut_path_graph path_query.src (call_edges rg) in
@@ -918,22 +937,53 @@ module RecGraph = struct
           M.add (v1, v2) (Pathexpr.eval ~algebra e |> transition_to_formula) tf
           ) cut_path_graph M.empty in 
 
-    let summarize call : 'b = 
-      let local_cfg = CFG.set_start cfg call |> CFG.prune in 
-      let reachable = CFG.terminals cfg in 
+    let summarize summarized_call : 'b = 
+      let local_cfg = CFG.set_start cfg summarized_call |> CFG.prune in 
+      let reachable = CFG.terminals local_cfg in 
       if List.length reachable = 0 then (algebra `One) else
       let tf = M.filter (fun e _ -> List.mem e reachable) global_tf in 
-      let (simulation, vasr_refl) = Vasrabstract.genVASR context symbol_pairs tf in
-      let int_cfg = interval_grammar local_cfg (Vasrabstract.dim vasr_refl) in 
+      let (simulation, vasr_refl) = Vasrabstract.genVASR ~is_lossy context symbol_pairs tf in
+      let interval_param = Vasrabstract.resetable_classes vasr_refl in 
+      let int_cfg = interval_grammar local_cfg interval_param in 
       let varmap = Memo.memo (fun e -> Syntax.mk_symbol ~name:(IntTriple.show e) context `TyInt |> Syntax.mk_const context) in 
       let callmap = Memo.memo (fun e -> Syntax.mk_symbol ~name:(IntQuad.show e) context `TyInt |> Syntax.mk_const context) in 
-      let supp_var_map, supp_constr = Vasrabstract.get_supp_var_map context vasr_refl varmap reachable in 
-      Syntax.mk_and context [
+      let supp_var_map, supp_constr = Vasrabstract.get_supp_var_map context interval_param vasr_refl varmap reachable in 
+
+      let f = Syntax.mk_and context [
         ICFG.parikh context int_cfg varmap callmap;
-        Vasrabstract.transition context symbol_pairs supp_var_map vasr_refl simulation;
-        Vasrabstract.well_formed context supp_var_map vasr_refl;
-        supp_constr
-      ] |> formula_to_transition
+        Vasrabstract.transition ~is_lossy context interval_param symbol_pairs supp_var_map vasr_refl simulation;
+        Vasrabstract.well_formed context interval_param supp_var_map vasr_refl;
+        supp_constr;
+        refinement summarized_call (fun call -> 
+            ((if call = summarized_call then (Syntax.mk_neg context (Syntax.mk_one context)) else Syntax.mk_zero context) ::
+            (List.init (interval_param + 1) (fun i ->
+              List.init (interval_param + 1 - i) (fun j -> 
+                let j = i + j in 
+                callmap (2*i+1, 2*j+1, fst call, snd call) 
+                )) |> List.flatten))
+            |> Syntax.mk_add context
+          )
+      ] in
+      print_string "\n\n\n Summarizing... \n";
+      (* print_string (IntPair.show call);
+      List.iter (fun e -> print_string (IntPair.show e)) reachable;  *)
+      (* print_int interval_param;
+      print_string (SrkUtil.mk_show (ICFG.pp) int_cfg); print_string "\n\n\n"; *)
+      (* print_string "\n simulation: "; print_string (SrkUtil.mk_show (Vasrabstract.pp_clm) simulation);
+      print_string "\n vasr: "; print_string (SrkUtil.mk_show (Vasrabstract.pp_vasr) vasr_refl); *)
+      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) f); *)
+      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) (Vasrabstract.transition context interval_param symbol_pairs supp_var_map vasr_refl simulation)); *)
+      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) f); *)
+      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) (refinement summarized_call (fun call -> 
+        ((if call = summarized_call then (Syntax.mk_neg context (Syntax.mk_one context)) else Syntax.mk_zero context) ::
+        (List.init (interval_param + 1) (fun i ->
+          List.init (interval_param + 1 - i) (fun j -> 
+            let j = i + j in 
+            callmap (2*i+1, 2*j+1, fst call, snd call) 
+            )) |> List.flatten))
+        |> Syntax.mk_add context
+      ))); *)
+      formula_to_transition symbol_pairs f
     in 
     M.iter (fun _ call -> set_summary weight_query call (summarize call)) (call_edges rg);
     weight_query
