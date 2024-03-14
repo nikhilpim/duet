@@ -67,9 +67,10 @@ let bounding_model context
         ) connected_component |> mk_or context (* note: instead of computing individual UB_p and intersecting them, we "or" each F and compute UB directly. *)
       ) connected_component in
     
-    let polyhedron_basis = (snd counter) :: (List.flatten deltas |> List.map snd) in let polyhedra = List.map (fun summary -> 
-        let basis_array = Array.of_list (List.map (mk_const context) polyhedron_basis) in 
-        let hull, cs = Abstract.conv_hull context summary basis_array in 
+    let polyhedron_basis = (snd counter) :: (List.flatten deltas |> List.map snd) in let polyhedra = List.map (fun summary -> let basis_array = Array.of_list (List.map (mk_const context) polyhedron_basis) in 
+        let hull = Abstract.conv_hull context summary basis_array |> Polyhedron.of_dd in
+        let cs = CoordinateSystem.mk_empty context in 
+        List.iter (fun sym -> CoordinateSystem.admit_cs_term cs (`App (sym, []))) polyhedron_basis; 
         let poly = Polyhedron.dual_cone (List.length polyhedron_basis) hull in 
         Polyhedron.meet 
           (Polyhedron.of_formula cs (mk_eq context (mk_const context (snd counter)) 
@@ -100,7 +101,7 @@ let bounding_model context
                 else mk_leq context (vec_to_term v) (mk_zero context) :: guard, lims
               | `Line -> 
                 mk_eq context (mk_zero context) (vec_to_term v) :: guard, lims
-          ) ([], []) (Polyhedron.enum_generators (List.length polyhedron_basis) ub) in 
+          ) ([], []) (DD.enum_generators (Polyhedron.dd_of (List.length polyhedron_basis) ub)) in 
         mk_and context guard, lims
       ) polyhedra in 
     

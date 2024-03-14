@@ -67,15 +67,15 @@ let abstract_single_lvasr context symbol_pairs f : coherent_linear_map * lvasr_t
 
   let adds_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols addition_basis in 
   let resets_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols reset_basis in 
-  let adds = Abstract.convex_hull context (mk_and context adds_formula) dummy_symbols |> fst 
-    |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.enum_generators (List.length dummy_symbols)
+  let adds = Abstract.conv_hull context (mk_and context adds_formula) (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd 
+    |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.dd_of (List.length dummy_symbols) |> DD.enum_generators 
     |> BatEnum.fold (fun acc elem -> match fst elem with 
       | `Line -> (V.negate (snd elem)) :: snd elem :: acc
       | `Ray -> if (V.is_zero (V.slice 1 (List.length addition_basis) (snd elem))) then acc else snd elem :: acc
       | `Vertex -> (assert (V.is_zero (snd elem))); acc (*This space should be a convex cone.*)
     ) [] in 
-  let resets = Abstract.convex_hull context (mk_and context resets_formula) dummy_symbols |> fst
-    |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.enum_generators (List.length dummy_symbols)
+  let resets = Abstract.conv_hull context (mk_and context resets_formula) (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd
+    |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.dd_of (List.length dummy_symbols) |> DD.enum_generators
     |> BatEnum.fold (fun acc elem -> match fst elem with 
       | `Line -> (V.negate (snd elem)) :: snd elem :: acc
       | `Ray -> if (V.is_zero (V.slice 1 (List.length reset_basis) (snd elem))) then acc else snd elem :: acc
@@ -108,10 +108,9 @@ let sep_image_vasr (f : coherent_linear_map) (v : vasr_transform) : vasr_transfo
     assert (v_dim = f_proj_in);
     ((f_proj_out, Q.vector_right_mul f_proj offset), reset)
     ) f
-
 let mat_out mat in_dim = 
   List.fold_left (fun max_out i -> 
-    let basis_vec = V.of_term (Mpqf.of_int 1) i in 
+    let basis_vec = V.of_term (QQ.of_int 1) i in 
     let output = Q.vector_right_mul mat basis_vec in 
     let local_max_out = V.fold (fun i _ local_max_out -> 
       if (i + 1) > local_max_out 
@@ -126,7 +125,7 @@ let mat_out mat in_dim =
       |> List.fold_left (fun acc e -> if e > acc then e else acc) 0 ) + 1 in 
     let bcollen = (BatEnum.fold (fun acc (_, v) -> V.fold (fun i _ acc -> i :: acc) v acc) [] (Q.rowsi (Q.transpose b)) 
       |> List.fold_left (fun acc e -> if e > acc then e else acc) 0) + 1 in 
-    let combine va vb = V.add va (V.of_enum (BatEnum.map (fun (v, i) -> (Mpqf.neg v, i + acollen)) (V.enum vb))) in 
+    let combine va vb = V.add va (V.of_enum (BatEnum.map (fun (v, i) -> (QQ.negate v, i + acollen)) (V.enum vb))) in 
     let rec helper acols bcols = match (acols, bcols) with
       | [], [] -> []
       | (_, av) :: atl , [] -> combine av V.zero :: helper atl bcols
@@ -136,7 +135,7 @@ let mat_out mat in_dim =
           else if (i < j) then combine av V.zero :: helper atl bcols 
           else combine V.zero bv :: helper acols btl in
     let constr = helper (List.rev (BatEnum.fold (fun acc e -> e :: acc) [] (Q.rowsi (Q.transpose a)))) (List.rev (BatEnum.fold (fun acc e -> e :: acc) [] (Q.rowsi (Q.transpose b)))) in 
-    let constr = List.map (fun i -> `Nonneg, (V.add_term (Mpqf.of_int 1) i V.zero)) (List.init (acollen + bcollen) (fun v -> v))
+    let constr = List.map (fun i -> `Nonneg, (V.add_term (QQ.of_int 1) i V.zero)) (List.init (acollen + bcollen) (fun v -> v))
       @  List.map (fun v -> `Zero, v) constr in  
     let constr_enum = BatEnum.map (fun i -> List.nth constr i) (BatEnum.range 0 ~until:(List.length constr-1)) in 
     let poly = Polyhedron.of_constraints constr_enum in 
@@ -147,7 +146,7 @@ let mat_out mat in_dim =
           | `Ray -> let (c, _) = split (snd elem) in if (V.is_zero (Q.vector_left_mul c a)) then acc else snd elem :: acc
           | `Line -> (assert false) (* it should not be possible to have a line *)
           | `Vertex -> assert (V.is_zero (snd elem)); acc
-      ) [] (Polyhedron.enum_generators (acollen + bcollen) poly) in
+      ) [] (DD.enum_generators (Polyhedron.dd_of (acollen + bcollen) poly)) in
     let c, d = List.map split rows |> List.split in 
 
     (* let rec prune (before_c, before_d) (current_c, current_d) (after_c, after_d) = 

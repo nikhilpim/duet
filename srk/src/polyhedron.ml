@@ -388,57 +388,12 @@ let max_constrained_dim polyhedron =
     0
     (enum_constraints polyhedron)
 
-let lexpr_of_vec vec =
-  let mk (coeff, dim) = (SrkApron.coeff_of_qq coeff, dim) in
-  let (const_coeff, rest) = V.pivot Linear.const_dim vec in
-  Apron.Linexpr0.of_list None
-    (BatList.of_enum (BatEnum.map mk (V.enum rest)))
-    (Some (SrkApron.coeff_of_qq const_coeff))
-
-let vec_of_lexpr linexpr =
-  let open Apron in
-  let vec = ref V.zero in
-  Linexpr0.iter (fun coeff dim ->
-      match SrkApron.qq_of_coeff coeff with
-      | Some qq -> vec := V.add_term qq dim (!vec)
-      | None -> assert false)
-    linexpr;
-  match SrkApron.qq_of_coeff (Linexpr0.get_cst linexpr) with
-  | Some qq -> V.add_term qq Linear.const_dim (!vec)
-  | None -> assert false
-
-let apron0_of man dim polyhedron =
-  let open Apron in
-  let lincons_of (cmp, vec) =
-    let cmp = match cmp with
-      | `Zero -> Lincons0.EQ
-      | `Pos -> Lincons0.SUP
-      | `Nonneg -> Lincons0.SUPEQ
-    in
-    Lincons0.make (lexpr_of_vec vec) cmp
+let project_dd xs polyhedron =
+  let dim = 1 + max_constrained_dim polyhedron in
+  let polyhedron =
+    List.fold_left (project_one 10) polyhedron xs
   in
-  P.enum polyhedron
-  /@ lincons_of
-  |> BatArray.of_enum
-  |> Abstract0.of_lincons_array man 0 dim
-
-let of_apron0 man abstract0 =
-  let open Apron in
-  let constraint_of lcons =
-    let open Lincons0 in
-    let cmp = match lcons.typ with
-      | Lincons0.EQ -> `Zero
-      | Lincons0.SUP -> `Pos
-      | Lincons0.SUPEQ -> `Nonneg
-      | _ -> assert false
-    in
-    (cmp, vec_of_lexpr lcons.linexpr0)
-  in
-  BatArray.fold_left
-    (fun p lcons ->
-      P.add (constraint_of lcons) p)
-    P.top
-    (Abstract0.to_lincons_array man abstract0)
+  of_dd (DD.project xs (dd_of dim polyhedron))
 
 let dual_cone dim polyhedron =
   (* Given polyhedron Ax >= b, form the constraint system
@@ -447,9 +402,9 @@ let dual_cone dim polyhedron =
   *)
   (* map [0 .. nb_constraints] to [dim .. dim + nb_constraints] *)
   assert (dim >= max_constrained_dim polyhedron);
-  let lambda i = dim + i in 
-  let lambda_nonnegative = 
-    BatEnum.foldi 
+  let lambda i = dim + i in
+  let lambda_nonnegative =
+    BatEnum.foldi
       (fun i (cmp, _) constraints ->
          match cmp with
          | `Zero -> constraints
@@ -457,9 +412,9 @@ let dual_cone dim polyhedron =
            P.add (`Nonneg, V.of_term QQ.one (lambda i)) constraints)
       P.top
       (P.enum polyhedron)
-    in
-  let farkas_constraints = 
-    let zero = 
+  in
+  let farkas_constraints =
+    let zero =
       BatEnum.fold
         (fun map dim -> IntMap.add dim (V.of_term (QQ.of_int (-1)) dim) map)
         IntMap.empty
@@ -480,9 +435,9 @@ let dual_cone dim polyhedron =
         (P.enum polyhedron)
     in
     IntMap.fold (fun _ t constraints ->
-      P.add (`Zero, t) constraints)
-    lambdaA
-    (P.add (`Nonneg, lambdab) lambda_nonnegative)
+        P.add (`Zero, t) constraints)
+      lambdaA
+      (P.add (`Nonneg, lambdab) lambda_nonnegative)
   in
   project
     (BatList.of_enum (dim -- (P.cardinal polyhedron + dim - 1)))
