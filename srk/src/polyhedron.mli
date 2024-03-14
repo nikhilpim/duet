@@ -90,11 +90,6 @@ val try_fourier_motzkin : 'a CoordinateSystem.t -> (symbol -> bool) -> t -> t
     involved in a constraint in [p].*)
 val dual_cone : int -> t -> t
 
-(** [constrained_dual_cone n p k] computes the polyhedron
-    {y | <y, x> >= k for all x in p}
-*)
-val constrained_dual_cone : int -> t -> int -> t
-
 (** [conical_hull n p] takes a natural [n] and a polyhedron [p] in
     QQ^n and computes the smallest cone that contains [p], represented
     as a polyhedron.  All half-spaces making up the conical hull are

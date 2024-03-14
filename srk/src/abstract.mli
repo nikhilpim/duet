@@ -5,7 +5,6 @@ open Syntax
     projected onto the given set of symbols.  The basis is represented as a
     list of terms, with the interpretation that a point [p] belongs to the
     affine hull if every term in the list evaluates to 0 at [p]. *)
-val affine_hull_with_solver : 'a context -> 'a formula -> symbol list -> 'a Smt.Solver.t -> 'a arith_term list
 val affine_hull : 'a context -> 'a formula -> symbol list -> 'a arith_term list
 
 (** Let [cs = t1, ..., tn] be a list of terms. [t1, ..., tn] generates
@@ -13,7 +12,6 @@ val affine_hull : 'a context -> 'a formula -> symbol list -> 'a arith_term list
    [vanishing_space srk phi cs] computes a basis for the subspace of
    functions from interpretations to rationals that evaluate to zero
    on all models of [phi]. *)
-val vanishing_space_with_solver : 'a context -> 'a formula -> 'a arith_term array -> 'a Smt.Solver.t -> Linear.QQVectorSpace.t
 val vanishing_space : 'a context -> 'a formula -> 'a arith_term array -> Linear.QQVectorSpace.t
 
 (** Given a formula [F] and terms [t_0,...,t_n], compute the convex hull all

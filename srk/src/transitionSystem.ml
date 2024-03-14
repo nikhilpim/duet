@@ -6,7 +6,7 @@ include Log.Make(struct let name = "srk.transitionSystem" end)
 module WG = WeightedGraph
 module Int = SrkUtil.Int
 
-type 'a label = 'a CfgSummarizer.label = 
+type 'a label = 
   | Weight of 'a
   | Call of int * int
 

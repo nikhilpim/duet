@@ -397,8 +397,7 @@ let verifier_builtins =
    "pthread_create"; "pthread_create"; "exit"; "abort";
    "rand"; "__VERIFIER_nondet_char"; "__VERIFIER_nondet_int"; "__VERIFIER_nondet_long";
    "__VERIFIER_nondet_pointer"; "__VERIFIER_nondet_uint";
-   "__CPROVER_atomic_begin"; "__CPROVER_atomic_end";
-   "__VERIFIER_atomic_begin"; "__VERIFIER_atomic_end"; "reach_error"]
+   "__CPROVER_atomic_begin"; "__CPROVER_atomic_end"; "__VERIFIER_atomic_begin"; "__VERIFIER_atomic_end"; "reach_error"]
 
 (* Translation context *)
 type ctx =
@@ -442,8 +441,6 @@ let tr_instr ctx instr =
       | ("__VERIFIER_error", None, []) | ("reach_error", None, []) ->
         mk_def (Assert (Bexpr.kfalse, "error"))
       | ("__assert_fail", None, [_;_;_;_]) ->
-        mk_def (Assert (Bexpr.kfalse, "fail"))
-      | ("reach_error", None, []) ->
         mk_def (Assert (Bexpr.kfalse, "fail"))
       | ("malloc", Some (Variable v), [x])
       | ("xmalloc", Some (Variable v), [x]) ->
