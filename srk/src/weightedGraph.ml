@@ -963,26 +963,7 @@ module RecGraph = struct
                 )) |> List.flatten))
             |> Syntax.mk_add context
           )
-      ] in
-      print_string "\n\n\n Summarizing... \n";
-      (* print_string (IntPair.show call);
-      List.iter (fun e -> print_string (IntPair.show e)) reachable;  *)
-      (* print_int interval_param;
-      print_string (SrkUtil.mk_show (ICFG.pp) int_cfg); print_string "\n\n\n"; *)
-      (* print_string "\n simulation: "; print_string (SrkUtil.mk_show (Vasrabstract.pp_clm) simulation);
-      print_string "\n vasr: "; print_string (SrkUtil.mk_show (Vasrabstract.pp_vasr) vasr_refl); *)
-      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) f); *)
-      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) (Vasrabstract.transition context interval_param symbol_pairs supp_var_map vasr_refl simulation)); *)
-      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) f); *)
-      (* print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) (refinement summarized_call (fun call -> 
-        ((if call = summarized_call then (Syntax.mk_neg context (Syntax.mk_one context)) else Syntax.mk_zero context) ::
-        (List.init (interval_param + 1) (fun i ->
-          List.init (interval_param + 1 - i) (fun j -> 
-            let j = i + j in 
-            callmap (2*i+1, 2*j+1, fst call, snd call) 
-            )) |> List.flatten))
-        |> Syntax.mk_add context
-      ))); *)
+      ] in 
       formula_to_transition symbol_pairs f
     in 
     M.iter (fun _ call -> set_summary weight_query call (summarize call)) (call_edges rg);

@@ -149,26 +149,26 @@ let mat_out mat in_dim =
       ) [] (DD.enum_generators (Polyhedron.dd_of (acollen + bcollen) poly)) in
     let c, d = List.map split rows |> List.split in 
 
-    (* let rec prune (before_c, before_d) (current_c, current_d) (after_c, after_d) = 
+    let rec prune (before_c, before_d) (after_c, after_d) = 
       match after_c, after_d with 
       | [], [] -> before_c, before_d 
-      | hd_c :: tl_c, hd_d :: tl_d -> (
+      | curr_c :: rest_c, curr_d :: rest_d -> (
         let c_enum = BatEnum.singleton (`Vertex, V.zero) in 
-        List.iter (fun c_v -> BatEnum.push c_enum (`Ray, c_v)) (before_c @ after_c);
-        let c_cone = Polyhedron.of_generators acollen c_enum in 
+        List.iter (fun c_v -> BatEnum.push c_enum (`Ray, c_v)) (before_c @ rest_c);
+        let c_cone = DD.of_generators acollen c_enum |> Polyhedron.of_dd in 
 
         let d_enum = BatEnum.singleton (`Vertex, V.zero) in 
-        List.iter (fun d_v -> BatEnum.push d_enum (`Ray, d_v)) (before_d @ after_d);
-        let d_cone = Polyhedron.of_generators bcollen d_enum in 
+        List.iter (fun d_v -> BatEnum.push d_enum (`Ray, d_v)) (before_d @ rest_d);
+        let d_cone = DD.of_generators bcollen d_enum |> Polyhedron.of_dd in 
         
-        if Polyhedron.mem (fun i -> V.coeff i current_c) c_cone && Polyhedron.mem (fun i -> V.coeff i current_d) d_cone 
-        then prune (before_c, before_d) (hd_c, hd_d) (tl_c, tl_d)
-        else prune (current_c :: before_c, current_d :: before_d) (hd_c, hd_d) (tl_c, tl_d)
+        if Polyhedron.mem (fun i -> V.coeff i curr_c) c_cone && Polyhedron.mem (fun i -> V.coeff i curr_d) d_cone 
+        then prune (before_c, before_d) (rest_c, rest_d)
+        else prune (curr_c :: before_c, curr_d :: before_d) (rest_c, rest_d)
       )
       | _, _ -> (assert false)
     in
     
-    let c, d = if (List.length rows) > 0 then prune ([], []) (List.hd c, List.hd d) (List.tl c, List.tl d) else c, d in  *)
+    let c, d = prune ([], []) (c, d) in
     let c, d = L.QQVectorSpace.matrix_of c, L.QQVectorSpace.matrix_of d in 
     (assert (Q.equal (Q.mul c a) (Q.mul d b) ));
     c, d
