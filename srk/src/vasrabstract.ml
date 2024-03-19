@@ -65,16 +65,18 @@ let abstract_single_lvasr context symbol_pairs f : coherent_linear_map * lvasr_t
     List.map (fun (_, post) -> mk_neg context (mk_const context post)) symbol_pairs in
   let dummy_symbols = List.mapi (fun i _ -> mk_symbol context ~name:((string_of_int i)^"D") `TyReal) addition_basis in 
 
-  let adds_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols addition_basis in 
-  let resets_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols reset_basis in 
-  let adds = Abstract.conv_hull context (mk_and context adds_formula) (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd 
+  let adds_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols addition_basis |> mk_and context 
+  |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) in 
+  let resets_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols reset_basis |> mk_and context |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) in  
+  print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) adds_formula); print_string "\n\n";
+  let adds = Abstract.conv_hull context adds_formula (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd 
     |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.dd_of (List.length dummy_symbols) |> DD.enum_generators 
     |> BatEnum.fold (fun acc elem -> match fst elem with 
       | `Line -> (V.negate (snd elem)) :: snd elem :: acc
       | `Ray -> if (V.is_zero (V.slice 1 (List.length addition_basis) (snd elem))) then acc else snd elem :: acc
       | `Vertex -> (assert (V.is_zero (snd elem))); acc (*This space should be a convex cone.*)
     ) [] in 
-  let resets = Abstract.conv_hull context (mk_and context resets_formula) (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd
+  let resets = Abstract.conv_hull context resets_formula (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd
     |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.dd_of (List.length dummy_symbols) |> DD.enum_generators
     |> BatEnum.fold (fun acc elem -> match fst elem with 
       | `Line -> (V.negate (snd elem)) :: snd elem :: acc
@@ -95,6 +97,7 @@ let abstract_single_lvasr context symbol_pairs f : coherent_linear_map * lvasr_t
 
 (* Given coherent linear maps f,g computes function compostion f g *)
 let sep_comp (f : coherent_linear_map) (g: coherent_linear_map) : coherent_linear_map = 
+        print_string "\n\n"; print_string (SrkUtil.mk_show pp_clm f); print_string "\n"; print_string (SrkUtil.mk_show pp_clm g); 
   List.map (fun (((f_proj_in, f_proj_out), f_proj), f_wit) ->
     let (((g_proj_in, g_proj_out), g_proj), g_wit) = List.nth g f_wit in 
     assert (g_proj_out = f_proj_in);
@@ -197,24 +200,60 @@ let mat_out mat in_dim =
         ) (a, b) g
         ) (a, b) f
 
-  (* let prune_pushout (lvasr : lvasr_transform) simulation pushout = 
+  let prune_pushout (lvasr : lvasr_transform) simulation pushout = 
     let module VM = BatMap.Make(V) in 
     let comp_sim = sep_comp pushout simulation in 
-    let eliminate = List.fold_left2 (fun acc (mat, _) (vec, _) -> 
+    let rows_to_use = List.fold_left2 (fun acc (mat, _) (vec, _) -> 
       let tightest = BatEnum.fold (fun map (ind, v) -> 
           if not (VM.mem v map) || V.coeff (VM.find v map) (snd vec) > V.coeff ind (snd vec) 
             then VM.add v ind map
             else map
         ) VM.empty (Q.rowsi (snd mat)) in
-      (List.init (fst (fst mat)) (fun i -> VM.find (Q.row i (snd mat)) tightest == i)) :: acc
-      ) [] comp_sim lvasr in 
+      let rows_to_use = VM.to_seq tightest |> BatSeq.enum 
+        |> BatEnum.fold (fun ls (_row, index) -> index :: ls) [] in 
+      rows_to_use :: acc
+      ) [] comp_sim (sep_image_vasr pushout lvasr) |> List.rev in 
+    List.map2 (fun (mat, wit) row_indices -> 
+       let rows' = List.map (fun index -> Q.row index (snd mat)) row_indices in
+       (((List.length rows'), snd (fst mat)), Q.of_rows rows'), wit 
+    ) pushout rows_to_use
+
+
+let genVASRLossy context symbol_pairs tf : coherent_linear_map * lvasr = 
+    let tf_list = M.fold (fun e tf_e acc -> (e, tf_e) :: acc) tf [] in 
+    let individual_reflections = List.map (fun (e, tf_e) -> (e, abstract_single_lvasr context symbol_pairs tf_e)) tf_list in
+    let curr_sim = List.hd individual_reflections |> snd |> fst in 
+    if (List.length individual_reflections == 1) then (curr_sim, M.singleton (List.hd individual_reflections |> fst) [List.hd individual_reflections |> snd |> snd]) else (
+    let tracking = [(List.hd individual_reflections |> fst), (List.hd individual_reflections |> snd |> snd)] in 
+    let simulation, reflection = List.fold_left (fun (curr_sim, tracking) (edge, (indiv_sim, lvasr_tf)) ->
+       let a_i, b_i = (sep_pushout ~is_lossy:true) curr_sim indiv_sim in 
+       let pruned_b_i = prune_pushout lvasr_tf indiv_sim b_i in 
+       let curr_sim' = sep_comp pruned_b_i indiv_sim in 
+       let lvasr_tf' = sep_image_vasr pruned_b_i lvasr_tf in 
+       let tracking' = List.map (fun (edge, tracking_tf) -> 
+         let pruned_a_i = prune_pushout tracking_tf curr_sim a_i in 
+         (edge, sep_image_vasr pruned_a_i tracking_tf)) tracking in 
+       (curr_sim', (edge, lvasr_tf') :: tracking')
+    ) (curr_sim, tracking) (List.tl individual_reflections) in 
     
-    List.map2 (fun (mat, wit) elim -> 
-      let rows' = List.filter (fun b -> b) elim |> List.length in 
-      let mat' = BatEnum.fold (fun acc (_, v) -> v :: acc) [] (Q.rowsi (snd mat)) |> List.rev |> Q.of_rows in 
-      ((rows', snd (fst mat)), mat'), wit
-      ) pushout (List.rev eliminate) *)
-    
+    let vasr_refl = List.fold_left (fun vasr_refl (edge, v_tr) -> M.add edge [v_tr] vasr_refl) M.empty reflection in 
+
+    let keep = List.map (fun (((_, output_dimension), mat), _) -> output_dimension != 0 && not (Q.equal Q.zero mat)) simulation in 
+  let keep = M.fold (fun _ v_tf_ls keep -> 
+    List.fold_left (fun keep v_tf -> 
+        List.map2 (fun keep_var ((state_size, _), _) -> keep_var && state_size != 0) keep v_tf 
+      ) keep v_tf_ls
+    ) vasr_refl keep in 
+  
+  let (simulation) = List.filteri (fun i _ -> List.nth keep i) simulation in 
+  let vasr_refl = M.map (fun v_tf_ls -> 
+    List.map (fun v_tf -> 
+      List.filteri (fun i _ -> List.nth keep i) v_tf) v_tf_ls
+    ) vasr_refl in 
+    simulation, vasr_refl
+
+    )
+ 
 let genVASR ~is_lossy context symbol_pairs tf : coherent_linear_map * vasr = 
   let abstract = if is_lossy then abstract_single_lvasr else abstract_single_vasr in 
   let tf_list = M.fold (fun e tf_e acc -> (e, tf_e) :: acc) tf [] in 
@@ -223,6 +262,7 @@ let genVASR ~is_lossy context symbol_pairs tf : coherent_linear_map * vasr =
   List.iter (fun (edge, (cm, vasr_ls)) -> print_string "\n\nEdge: "; print_string (IntPair.show edge); print_string "\n simulation: "; print_string (SrkUtil.mk_show pp_clm cm); print_string "\n LVASR"; print_string (SrkUtil.mk_show pp_vasr (M.add edge [vasr_ls] M.empty))) individual_reflections; *)
   
   let curr : coherent_linear_map = List.hd individual_reflections |> snd |> fst in
+  if (List.length individual_reflections == 1) then (curr, M.singleton (List.hd individual_reflections |> fst) [List.hd individual_reflections |> snd |> snd]) else (
 
   let (ab, _) = List.fold_left (fun (ab, curr) (_, (f, _)) -> 
     let a_i, b_i = (sep_pushout ~is_lossy) curr f in 
@@ -267,7 +307,7 @@ let genVASR ~is_lossy context symbol_pairs tf : coherent_linear_map * vasr =
       ) v_tf_ls
     ) vasr_refl in  *)
         
-  simulation, vasr_refl
+  simulation, vasr_refl )
 
 
 

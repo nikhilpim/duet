@@ -942,7 +942,8 @@ module RecGraph = struct
       let reachable = CFG.terminals local_cfg in 
       if List.length reachable = 0 then (algebra `One) else
       let tf = M.filter (fun e _ -> List.mem e reachable) global_tf in 
-      let (simulation, vasr_refl) = Vasrabstract.genVASR ~is_lossy context symbol_pairs tf in
+      let (simulation, vasr_refl) = if is_lossy then 
+          (Vasrabstract.genVASRLossy context symbol_pairs tf) else Vasrabstract.genVASR ~is_lossy context symbol_pairs tf in
       let interval_param = Vasrabstract.resetable_classes vasr_refl in 
       let int_cfg = interval_grammar local_cfg interval_param in 
       let varmap = Memo.memo (fun e -> Syntax.mk_symbol ~name:(IntTriple.show e) context `TyInt |> Syntax.mk_const context) in 

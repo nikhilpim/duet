@@ -29,6 +29,8 @@ val sep_image_vasr : coherent_linear_map -> vasr_transform -> vasr_transform
 val sep_pushout : is_lossy:bool -> coherent_linear_map -> coherent_linear_map -> 
     coherent_linear_map * coherent_linear_map
 
+val genVASRLossy : 'a context -> (symbol * symbol) list -> 'a formula BatMap.Make (SrkUtil.IntPair).t
+    -> coherent_linear_map * lvasr
 val genVASR : is_lossy:bool -> 'a context -> (symbol * symbol) list -> 'a formula BatMap.Make(SrkUtil.IntPair).t 
     -> coherent_linear_map * vasr
 
