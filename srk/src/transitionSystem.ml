@@ -161,6 +161,35 @@ module Make
       algebra
       ~delay
       dom
+  
+  let mk_joint_query ts source ~lossy ~split_disjuncts ~ind_bounds dom = 
+      let module S = Set.Make(Var) in
+      let wq1 = mk_cfg_query ts source ~lossy ~split_disjuncts ~ind_bounds in 
+      let wq2 = mk_query ts source dom in 
+      let global_variables = WG.fold_edges (fun (_, w, _) s ->
+      match w with
+        | Weight t -> BatEnum.fold (fun s (var, _) -> if Var.is_global var then (S.add var s) else s) s (T.transform t)
+        | Call _ -> s
+      ) ts S.empty in
+    let symbol_pairs = List.map T.symbol_pair (S.elements global_variables) in
+    let transition_to_formula t =
+        let tf = T.to_transition_formula t in
+        let unincluded_globals = S.filter (fun var -> not (T.mem_transform var t)) global_variables in
+        (S.fold (fun v ls ->
+          let (pre, post) = T.symbol_pair v in
+          (mk_eq C.context (mk_const C.context pre) (mk_const C.context post)) :: ls) unincluded_globals [])
+          |> List.cons (TransitionFormula.formula tf)
+          |>  mk_and C.context
+      in
+    let formula_to_transition formula  =
+      List.map (fun (pre, post) ->
+        match Var.of_symbol pre with
+        | Some var -> (var, Syntax.mk_const C.context post)
+        | None -> assert false) symbol_pairs
+      |> T.construct formula in
+      WG.RecGraph.merge_wq C.context wq1 wq2  
+        transition_to_formula
+        formula_to_transition
 
   type t = (T.t label) WG.t
 

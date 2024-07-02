@@ -61,13 +61,14 @@ let bounding_model context
         let aux_init = [mk_eq context (mk_const context (fst sym_one)) (mk_one context);
                         mk_eq context (mk_const context (fst counter)) (mk_zero context);
                         mk_eq context (mk_const context (fst flag)) (mk_zero context);
-                        if is_upper_bound then mk_eq context (mk_const context (snd flag)) (mk_one context) else mk_true context;
+                        if is_upper_bound then mk_or context  [mk_eq context (mk_const context (snd flag)) (mk_one context); mk_lt context (mk_zero context) (mk_const context (snd counter))] else mk_true context;
                         ] in 
         mk_and context (summary :: (delta_init @ aux_init))
         ) connected_component |> mk_or context (* note: instead of computing individual UB_p and intersecting them, we "or" each F and compute UB directly. *)
       ) connected_component in
     
     let polyhedron_basis = (snd counter) :: (List.flatten deltas |> List.map snd) in let polyhedra = List.map (fun summary -> let basis_array = Array.of_list (List.map (mk_const context) polyhedron_basis) in 
+    let summary = summary |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) |> Syntax.eliminate_floor_mod_div context in 
         let hull = Abstract.conv_hull context summary basis_array |> Polyhedron.of_dd in
         let cs = CoordinateSystem.mk_empty context in 
         List.iter (fun sym -> CoordinateSystem.admit_cs_term cs (`App (sym, []))) polyhedron_basis; 

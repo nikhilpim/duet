@@ -63,6 +63,8 @@ module Make
                  (module WeightedGraph.AbstractWeight
                          with type weight = transition) ->
                  query
+  val mk_joint_query: transition label WeightedGraph.weighted_graph ->
+   vertex -> lossy:bool -> split_disjuncts:bool -> ind_bounds:bool -> (module WeightedGraph.AbstractWeight with type weight = transition) -> transition WeightedGraph.RecGraph.weight_query
 
   (** Over-approximate the sum of the weights of all paths from the
      query's source vertex to the given target vertex. *)

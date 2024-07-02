@@ -970,6 +970,13 @@ module RecGraph = struct
     M.iter (fun _ call -> set_summary weight_query call (summarize call)) (call_edges rg);
     weight_query
 
+  let merge_wq context (wq1 : 'a weight_query) (wq2 : 'a weight_query) t_to_f f_to_t = 
+    HT.iter (fun e summary -> 
+      let summary2 = HT.find wq2.summaries e in 
+      let combined_summary = Syntax.mk_and context [t_to_f summary; t_to_f summary2] |> f_to_t in 
+      set_summary wq1 e combined_summary) wq1.summaries;
+    wq1
+
   let empty () =
     let context = mk_context () in
     let algebra =

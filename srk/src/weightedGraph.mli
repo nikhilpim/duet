@@ -217,6 +217,8 @@ module RecGraph : sig
                             (module AbstractWeight
                                     with type weight = 'a) ->
                             'a weight_query
+  val merge_wq : 'b Syntax.context -> 'a weight_query -> 'a weight_query -> 
+          ('a -> 'b Syntax.formula) -> ('b Syntax.formula -> 'a) -> 'a weight_query
   (** Find the sum of weights of all interprocedural paths beginning
      at the query's source vertex and ending at a given target. *)
   val path_weight : 'a weight_query -> vertex -> 'a

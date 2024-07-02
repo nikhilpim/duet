@@ -34,6 +34,7 @@ let vasr_sum = ref false
 let lossy = ref false
 let ind_bounds = ref false
 let split_disjuncts = ref false
+let joint = ref false
 
 let dump_goal loc path_condition =
   if !dump_goals then begin
@@ -496,8 +497,7 @@ let rec record_assign (lhs : varinfo) loff rhs roff fields =
           | TPointer rhs ->
             BatList.reduce K.mul [
               K.assign (VVal lhs) rhs.ptr_val;
-              K.assign (VPos lhs) rhs.ptr_pos;
-              K.assign (VWidth lhs) rhs.ptr_width;
+              K.assign (VPos lhs) rhs.ptr_pos; K.assign (VWidth lhs) rhs.ptr_width;
             ]
           | TInt tint -> begin
               BatList.reduce K.mul [
@@ -855,13 +855,17 @@ let make_transition_system rg =
 
 
 let mk_query ts entry =
-  if !vasr_sum 
-    then (TS.mk_cfg_query ts entry ~lossy:!lossy ~split_disjuncts:!split_disjuncts ~ind_bounds:!ind_bounds)
-    else TS.mk_query ts entry
-      (if !monotone then
+  if !joint
+     then (TS.mk_joint_query ts entry ~lossy:!lossy ~split_disjuncts:!split_disjuncts ~ind_bounds:!ind_bounds (if !monotone then
           (module MonotoneDom)
         else
-          (module TransitionDom))
+          (module TransitionDom))) else (
+  if !vasr_sum 
+    then (TS.mk_cfg_query ts entry ~lossy:!lossy ~split_disjuncts:!split_disjuncts ~ind_bounds:!ind_bounds)
+    else TS.mk_query ts entry (if !monotone then
+          (module MonotoneDom)
+        else
+          (module TransitionDom)))
 let analyze file =
   populate_offset_table file;
   match file.entry_points with
@@ -1390,6 +1394,11 @@ let _ =
     Arg.Unit (fun () ->
         vasr_sum := true),
     "Use vasr abstraction to summarize procedures");
+  CmdLine.register_config
+    ("-joint",
+    Arg.Unit (fun () ->
+        joint := true),
+     "Use both vasr and iterative summaries");
   CmdLine.register_config
     ("-lvasr-sum",
     Arg.Unit (fun () ->

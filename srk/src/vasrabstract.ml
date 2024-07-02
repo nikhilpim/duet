@@ -66,9 +66,8 @@ let abstract_single_lvasr context symbol_pairs f : coherent_linear_map * lvasr_t
   let dummy_symbols = List.mapi (fun i _ -> mk_symbol context ~name:((string_of_int i)^"D") `TyReal) addition_basis in 
 
   let adds_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols addition_basis |> mk_and context 
-  |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) in 
-  let resets_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols reset_basis |> mk_and context |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) in  
-  print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered context) adds_formula); print_string "\n\n";
+  |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) |> Syntax.eliminate_floor_mod_div context in 
+  let resets_formula = List.fold_left2 (fun acc dummy term -> mk_eq context (mk_const context dummy) term :: acc) [f] dummy_symbols reset_basis |> mk_and context |> Nonlinear.linearize context |> rewrite context ~down:(pos_rewriter context) |> Syntax.eliminate_floor_mod_div context in  
   let adds = Abstract.conv_hull context adds_formula (Array.of_list (List.map (mk_const context) dummy_symbols)) |> Polyhedron.of_dd 
     |> Polyhedron.dual_cone (List.length dummy_symbols) |> Polyhedron.dd_of (List.length dummy_symbols) |> DD.enum_generators 
     |> BatEnum.fold (fun acc elem -> match fst elem with 
@@ -97,7 +96,7 @@ let abstract_single_lvasr context symbol_pairs f : coherent_linear_map * lvasr_t
 
 (* Given coherent linear maps f,g computes function compostion f g *)
 let sep_comp (f : coherent_linear_map) (g: coherent_linear_map) : coherent_linear_map = 
-        print_string "\n\n"; print_string (SrkUtil.mk_show pp_clm f); print_string "\n"; print_string (SrkUtil.mk_show pp_clm g); 
+(*       print_string "\n\n"; print_string (SrkUtil.mk_show pp_clm f); print_string "\n"; print_string (SrkUtil.mk_show pp_clm g);*)
   List.map (fun (((f_proj_in, f_proj_out), f_proj), f_wit) ->
     let (((g_proj_in, g_proj_out), g_proj), g_wit) = List.nth g f_wit in 
     assert (g_proj_out = f_proj_in);
@@ -227,13 +226,19 @@ let genVASRLossy context symbol_pairs tf : coherent_linear_map * lvasr =
     let tracking = [(List.hd individual_reflections |> fst), (List.hd individual_reflections |> snd |> snd)] in 
     let simulation, reflection = List.fold_left (fun (curr_sim, tracking) (edge, (indiv_sim, lvasr_tf)) ->
        let a_i, b_i = (sep_pushout ~is_lossy:true) curr_sim indiv_sim in 
-       let pruned_b_i = prune_pushout lvasr_tf indiv_sim b_i in 
+       let _pruned_b_i = prune_pushout lvasr_tf indiv_sim b_i in 
+       let pruned_b_i = b_i in 
        let curr_sim' = sep_comp pruned_b_i indiv_sim in 
+       let curr_sim'' = List.filter (fun (((_, output_dim), _), _) -> output_dim != 0) curr_sim' in 
        let lvasr_tf' = sep_image_vasr pruned_b_i lvasr_tf in 
+       let lvasr_tf'' = List.filter (fun ((dim, _), _) -> dim != 0) lvasr_tf' in 
        let tracking' = List.map (fun (edge, tracking_tf) -> 
-         let pruned_a_i = prune_pushout tracking_tf curr_sim a_i in 
-         (edge, sep_image_vasr pruned_a_i tracking_tf)) tracking in 
-       (curr_sim', (edge, lvasr_tf') :: tracking')
+         let _pruned_a_i = prune_pushout tracking_tf curr_sim a_i in 
+         let pruned_a_i = a_i in 
+         let tracking_tf' = sep_image_vasr pruned_a_i tracking_tf in 
+         let tracking_tf'' = List.filter (fun ((dim, _), _) -> dim != 0) tracking_tf' in 
+         (edge, tracking_tf'')) tracking in 
+       (curr_sim'', (edge, lvasr_tf'') :: tracking')
     ) (curr_sim, tracking) (List.tl individual_reflections) in 
     
     let vasr_refl = List.fold_left (fun vasr_refl (edge, v_tr) -> M.add edge [v_tr] vasr_refl) M.empty reflection in 
