@@ -1,7 +1,6 @@
 (rule
   (target link_flags.sexp)
-  (action (write-file link_flags.sexp "(-cclib -Wl,-keep_dwarf_unwind)"))
-  (enabled_if (= %{ocaml-config:system} macosx)))
+  (action (write-file link_flags.sexp "(-cclib -Wl,-keep_dwarf_unwind -cclib -L/opt/homebrew/opt/mpfr/lib -cclib -L/opt/homebrew/opt/gmp/lib)"))  (enabled_if (= %{ocaml-config:system} macosx)))
 
 (rule
   (target link_flags.sexp)
@@ -12,5 +11,5 @@
   (names test_srk)
   (modes native)
   (link_flags (:standard) (:include link_flags.sexp))
-  (libraries srk oUnit flint apron apron.boxMPQ apron.octMPQ apron.polkaMPQ)
+  (libraries srk ounit2 flint apron apron.boxMPQ apron.octMPQ apron.polkaMPQ)
   (preprocess (pps ppx_deriving.ord ppx_deriving.eq ppx_deriving.show)))

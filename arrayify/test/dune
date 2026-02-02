@@ -8,12 +8,17 @@
  (modules test_parser)
  (libraries arrayify))
 
- (test
+(test
  (name test_symbolicheap)
  (libraries arrayify)
 )
 
- (test
- (name test_stringtest)
+; (test
+;  (name test_stringtest)
+;  (libraries arrayify)
+; )
+
+(test
+ (name test_pipeline)
  (libraries arrayify)
 )

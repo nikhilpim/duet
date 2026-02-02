@@ -1,5 +1,5 @@
 open Srk
-open OUnit
+open OUnit2
 open SrkApron
 open Test_pervasives
 

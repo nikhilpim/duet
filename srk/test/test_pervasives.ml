@@ -1,5 +1,5 @@
 open Srk
-open OUnit
+open OUnit2
 open Syntax
 open Linear
 open BatPervasives

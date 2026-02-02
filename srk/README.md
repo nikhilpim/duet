@@ -54,7 +54,7 @@ Next, add the [sv-opam](https://github.com/zkincaid/sv-opam) OPAM repository, an
 ```
  opam remote add sv git://github.com/zkincaid/sv-opam.git#modern
 
- opam install ocamlgraph batteries ppx_deriving z3 apron ounit menhir ntl
+ opam install ocamlgraph batteries ppx_deriving z3 apron ounit2 menhir ntl
 ```
 
 ### Building srk

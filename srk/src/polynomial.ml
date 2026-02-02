@@ -1342,7 +1342,7 @@ module FGb = struct
   type fmon = Z.t * (int list)
   type fpoly = fmon list
 
-  let () = Faugere_zarith.Fgb_int_zarith.set_number_of_threads 2(*; Faugere_zarith.Fgb_int_zarith.set_fgb_verbosity 1*)
+  (* let () = Faugere_zarith.Fgb_int_zarith.set_number_of_threads 2; Faugere_zarith.Fgb_int_zarith.set_fgb_verbosity 1 *)
 
   let use_fgb = ref true
 
@@ -1401,7 +1401,8 @@ module FGb = struct
     let non_zero = List.filter (fun ml -> not (List.for_all (fun (c, _) -> ZZ.equal ZZ.zero c) ml)) polys in 
     if List.length non_zero = 0 then [convert_to_faugere (blk1 @ blk2) QQXs.zero]
     else
-      Faugere_zarith.Fgb_int_zarith.fgb non_zero (List.map string_of_int blk1) (List.map string_of_int blk2)
+      failwith ("faugere not installed")
+      
 
   let grobner_basis (blk1 : Monomial.dim list) (blk2 : Monomial.dim list) (polys : QQXs.t list) = 
     if !use_fgb then

@@ -1,7 +1,7 @@
 (rule
   (target link_flags.sexp)
-  (action (write-file link_flags.sexp "(-cclib -Wl,-keep_dwarf_unwind)"))
-  (enabled_if (= %{ocaml-config:system} macosx)))
+ (action (write-file link_flags.sexp
+    "(-cclib -Wl,-keep_dwarf_unwind -cclib -L/opt/homebrew/opt/mpfr/lib -cclib -L/opt/homebrew/opt/gmp/lib -cclib -lmpfr -cclib -lgmp)"))  (enabled_if (= %{ocaml-config:system} macosx)))
 
 (rule
   (target link_flags.sexp)
@@ -23,8 +23,8 @@
     ocamlgraph
     normalizffi
     flint
-    faugere
-    faugere.zarith
+    ; faugere
+    ; faugere.zarith
     )
   (preprocess (pps ppx_deriving.ord ppx_deriving.eq ppx_deriving.show)))
 

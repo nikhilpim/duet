@@ -370,9 +370,12 @@ module MakeNF (A : sig val min_poly : QQX.t end) = struct
       let n = Array.length a.(0) in
       FMPZ_mat.init ~rows:m ~columns:n (fun i j -> a.(i).(j))
 
+  let init_matrix m n f = 
+    (Array.init m (fun i -> Array.init n (fun j -> f i j)))
+
   let unzzmify matrix = 
     let m, n = FMPZ_mat.rows matrix, FMPZ_mat.columns matrix in
-    Array.init_matrix m n (FMPZ_mat.entry matrix)
+    (init_matrix m n (FMPZ_mat.entry matrix))
 
   (*The number field is Q[x]/q(x) for an integer polynomial q(x). The order O is Z[x]/q(x).*)
   module O = struct
