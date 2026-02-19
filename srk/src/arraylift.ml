@@ -84,20 +84,24 @@ let bubble_sym (srk : 'a context) (form : 'a formula) : (symbol list * (symbol o
         let name = Format.asprintf "rep_%a_univ"
           (pp_symbol srk) new_sym
         in
-        Expr.HT.add (Hashtbl.find rep_map new_sym) (mk_const srk forall_symbol) (mk_symbol srk `TyInt ~name)
-      )); 
-      (if typ = `TyInt then (leading_existentials := new_sym :: !leading_existentials));
-      go body (Env.push new_sym env) (* move exists ai and FC here. *)
+        Expr.HT.add (Hashtbl.find rep_map new_sym) (mk_const srk forall_symbol) (mk_symbol srk `TyInt ~name);
+        let forall, body' = go body (Env.push new_sym env) in 
+        let ai = get_or_create_replacement new_sym (mk_const srk forall_symbol) in 
+        let fc = BatEnum.fold (fun acc (index, replacement) ->
+            (mk_if srk (mk_eq srk index (mk_const srk forall_symbol)) (mk_eq srk (mk_const srk replacement) ai)) :: acc
+          ) [] (Expr.HT.enum (Hashtbl.find rep_map new_sym)) in 
+        let body'' = mk_exists_const srk (Expr.HT.find (Hashtbl.find rep_map new_sym) (mk_const srk forall_symbol)) 
+          (mk_and srk ((body') :: fc))
+      in 
+        forall, body''
+      ) else (
+        leading_existentials := new_sym :: !leading_existentials; 
+        go body (Env.push new_sym env) 
+        ))
     | `Quantify (`Forall, _, typ, body) -> 
       assert (typ = `TyInt);
       let body = replace (Env.push forall_symbol env) body in 
-      let functional_consistency = (Hashtbl.fold (fun array_symbol m (acc) -> 
-          let ai = get_or_create_replacement array_symbol (mk_const srk forall_symbol) in 
-           BatEnum.fold (fun acc (index, replacement) -> 
-            (mk_if srk (mk_eq srk index (mk_const srk forall_symbol)) (mk_eq srk (mk_const srk replacement) ai)) :: acc
-            ) acc (Expr.HT.enum m)
-        ) rep_map ([])) in 
-      (true, mk_and srk (body :: functional_consistency))
+      (true, body)
     | `And ls -> 
       let (forall, parts) = List.fold_left (fun (forall, parts) f -> 
         let (f_forall, f_part) = go f env in 
@@ -128,10 +132,6 @@ let bubble_sym (srk : 'a context) (form : 'a formula) : (symbol list * (symbol o
     | `Not _ -> failwith "Not is not supported in Skolem fragment"
   in
   let forall, retf = go form Syntax.Env.empty in 
-  let retf = Hashtbl.fold (fun _ m f -> 
-    let forall_rep = Expr.HT.find m (mk_const srk forall_symbol) in 
-    mk_exists_const srk forall_rep f
-    ) rep_map retf in 
   (!leading_existentials, (if forall then (Some forall_symbol) else None), retf)
 
 
