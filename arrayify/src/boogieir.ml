@@ -240,15 +240,6 @@ let mk_node instrs =
   let id = fresh_node_id () in
   (id, Llvmutil.dummy, Symbolicheap.true_sheap, instrs)
 
-let rec extract_prefix (instrs : Boogie_ast.stmt list) =
-  match instrs with
-  | [] -> [], []
-  | (Boogie_ast.Assign _ | Boogie_ast.ArrayAssign _ | Boogie_ast.Havoc _ | Boogie_ast.Assume _ | Boogie_ast.Assert _
-    | Boogie_ast.Return) as instr :: rest ->
-    let prefix, remaining = extract_prefix rest in
-    instr :: prefix, remaining
-  | _ :: _ -> [], instrs
-
 let rec int_term_of_expr e =
   match e with
   | Boogie_ast.LiteralInt i -> Int i
@@ -293,11 +284,15 @@ let rec add_instrs_to_graph
   (label_map : BGNode.t StringMap.t) 
   (goto_edges : (BGNode.t * string) list)
   : BGraph.t * BGNode.t * BGNode.t * (BGNode.t StringMap.t) * ((BGNode.t * string) list) = 
-  let prefix, remaining = extract_prefix instrs in
-  let prefix_node = mk_node (List.map convert prefix) in
-  match remaining with 
-  | [] -> BGraph.add_vertex g prefix_node, prefix_node, prefix_node, label_map, goto_edges
+  match instrs with 
+  | [] -> g, (mk_node []), (mk_node []), label_map, goto_edges
+  | (Boogie_ast.Assign _ | Boogie_ast.ArrayAssign _ | Boogie_ast.Havoc _ | Boogie_ast.Assume _ | Boogie_ast.Assert _|  Boogie_ast.Return) as instr :: rest -> 
+      let g', rest_entry, rest_exit, label_map', goto_edges' = add_instrs_to_graph rest g label_map goto_edges in 
+      let n = mk_node [convert instr] in 
+      let g_final = BGraph.add_edge_e g' (n, (None, None), rest_entry) in 
+      g_final, n, rest_exit, label_map', goto_edges'
   | Boogie_ast.If (cond, then_stmts, else_stmts) :: rest -> 
+    let prefix_node = mk_node [] in 
     (let g', then_entry, then_exit, label_map', goto_edges' = add_instrs_to_graph (then_stmts) g label_map goto_edges in 
     let g'', else_entry, else_exit, label_map'', goto_edges'' = add_instrs_to_graph (else_stmts) g' label_map' goto_edges' in
     let g''', rest_entry, rest_exit, label_map''', goto_edges''' = add_instrs_to_graph rest g'' label_map'' goto_edges'' in
@@ -308,6 +303,7 @@ let rec add_instrs_to_graph
     let g_final''' = BGraph.add_edge_e g_final'' (else_exit, (None, None), rest_entry) in 
     g_final''', prefix_node, rest_exit, label_map''', goto_edges''')
   | Boogie_ast.While (cond, body) :: rest -> 
+    let prefix_node = mk_node [] in 
     let g', body_entry, body_exit, label_map', goto_edges' = add_instrs_to_graph body g label_map goto_edges in 
     let g'', rest_entry, rest_exit, label_map'', goto_edges'' = add_instrs_to_graph rest g' label_map' goto_edges' in
     let cond_formula = formula_of_expr cond in
@@ -319,12 +315,11 @@ let rec add_instrs_to_graph
   | Boogie_ast.Call (_id, _args) :: _rest -> raise (Failure "Function calls not supported yet")
   | Boogie_ast.Label id :: rest ->
     let g', rest_entry, rest_exit, label_map', goto_edges' = add_instrs_to_graph rest g label_map goto_edges in 
-    let g_final = BGraph.add_edge_e g' (prefix_node, (None, None), rest_entry) in
-    g_final, prefix_node, rest_exit, (StringMap.add id rest_entry label_map'), goto_edges'
+    g', rest_entry, rest_exit, (StringMap.add id rest_entry label_map'), goto_edges'
   | Boogie_ast.Goto id :: rest ->
+    let prefix_node = mk_node [] in 
     let g', _rest_entry, rest_exit, label_map', goto_edges' = add_instrs_to_graph rest g label_map goto_edges in
     g', prefix_node, rest_exit, label_map', (prefix_node, id) :: goto_edges'
-  | _ -> raise (Failure "Should be part of prefix")
 
 
 
@@ -376,6 +371,8 @@ let boogie_instr_to_transition (instr : boogie_instr) : Srk.Transition.Make(Glob
   | _ -> failwith ("Not implemented yet")
 
 
+let return_node = 0
+let error_node = -1
   open Srk.TransitionSystem
 let graph_to_transition_system (g : BGraph.t) : Srk.TransitionSystem.Make(Global.Ctx)(Variable.Var)(Srk.Transition.Make(Global.Ctx)(Variable.Var)).t =
   let module TS = Srk.TransitionSystem.Make(Global.Ctx)(Variable.Var)(T) in 
@@ -406,8 +403,16 @@ let graph_to_transition_system (g : BGraph.t) : Srk.TransitionSystem.Make(Global
     let instrs = match i with 
       | None -> instrs
       | Some i' -> instrs @ i' in
-    let weight = List.fold_left (fun acc instr -> T.mul acc (boogie_instr_to_transition instr)) T.one instrs in 
-    WG.add_edge wg vindex1 (Weight weight) vindex2 
+    match instrs with 
+    | [Assert f] -> (
+      let assertion_passed = boogie_instr_to_transition (Assert f) in 
+      let assertion_failed = boogie_instr_to_transition (Assert (Not f)) in 
+      let wg' = WG.add_edge wg vindex1 (Weight assertion_passed) vindex2 in 
+      WG.add_edge wg' vindex1 (Weight assertion_failed) error_node
+    )
+    | _ -> 
+      let weight = List.fold_left (fun acc instr -> T.mul acc (boogie_instr_to_transition instr)) T.one instrs in 
+      WG.add_edge wg vindex1 (Weight weight) vindex2 
     ) g empty in 
 
   let wg = BGraph.fold_vertex (fun v wg ->
@@ -415,7 +420,7 @@ let graph_to_transition_system (g : BGraph.t) : Srk.TransitionSystem.Make(Global
       then (
         let (vindex, _, _, instrs) = v in 
         let weight = List.fold_left (fun acc instr -> T.mul acc (boogie_instr_to_transition instr)) T.one instrs in
-        WG.add_edge wg vindex (Weight weight) (0)
+        WG.add_edge wg vindex (Weight weight) (return_node)
       ) 
       else (wg)
     )  g wg in 

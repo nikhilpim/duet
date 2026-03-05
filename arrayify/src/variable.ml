@@ -53,6 +53,9 @@ let generate_new_bvar (ls : boogie_avar list) : bvar =
 
 module Var = struct 
   type t = BVar of boogie_var | BAVar of boogie_avar
+  let s_to_v = Hashtbl.create 16
+  let v_to_s = Hashtbl.create 16
+
   let pp fmt v = 
     match v with 
     | BVar bv -> Format.fprintf fmt "%s" bv
@@ -72,17 +75,20 @@ module Var = struct
     | BVar _, BAVar _ -> -1
     | BAVar _, BVar _ -> 1
   let symbol_of v = 
-    match v with 
-    | BVar bv -> Syntax.mk_symbol Global.srk ~name:(boogie_var_name bv) `TyInt
-    | BAVar ba -> Syntax.mk_symbol Global.srk ~name:(boogie_avar_name ba) `TyArr
+    match Hashtbl.find_opt v_to_s v with 
+    | None -> (
+      let new_s = (match v with 
+        | BVar bv -> Syntax.mk_symbol Global.srk ~name:(boogie_var_name bv) `TyInt
+        | BAVar ba -> Syntax.mk_symbol Global.srk ~name:(boogie_avar_name ba) `TyArr) in 
+      Hashtbl.add v_to_s v new_s;
+      Hashtbl.add s_to_v new_s v;
+      new_s
+      )
+    | Some s -> s
   let of_symbol s = 
-    let name = Syntax.symbol_name Global.srk s in
-    let ty = Syntax.typ_symbol Global.srk s in
-    match ty, name with 
-    | _, None -> None
-    | `TyInt, Some n -> Some (BVar n)
-    | `TyArr, Some n -> Some (BAVar n)
-    | _, _ -> failwith "Invalid symbol type"
+    match Hashtbl.find_opt s_to_v s with 
+    | Some v -> Some v
+    | None -> None
   let is_global _ = true
   let hash v = Hashtbl.hash v
   let equal v1 v2 = (compare v1 v2) = 0
